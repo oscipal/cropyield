@@ -3,7 +3,7 @@ data:
   preprocessed: /scratch2/oscipal/yieldsat/preprocessed
   raw: /scratch2/oscipal/yieldsat/raw
   # Expected location according to the tutorial; confirm in notebooks/00_inspect.ipynb and update if different.
-  germany_nc: /scratch2/oscipal/yieldsat/preprocessed/Germany/merged/merge_s2-soil-dem-weather-coords.nc
+  germany_nc: /scratch2/oscipal/yieldsat/preprocessed/Germany/merge_s2-soil-dem-weather-coords.nc
 
 # Derived files (.npy, parquet, predictions). Must not be inside the data folders.
 work_dir: /scratch2/oscipal/yieldsat_work
