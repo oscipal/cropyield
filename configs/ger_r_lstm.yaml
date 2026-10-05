@@ -1,0 +1,29 @@
+# Step 1: LSTM, Sentinel-2 only, rapeseed (GER-R), CV10.
+name: s2_ger_r_cv10
+seed: 42
+
+data:
+  subdir: ger_r            # inside work_dir
+  crop: rapeseed           # matched case-insensitively against decoded crop labels
+  bands: [B01, B02, B03, B04, B05, B06, B07, B08, B8A, B09, B11, B12]
+
+splits:
+  file: ger_r_cv10.json    # inside splits_dir
+  n_splits: 10
+  inner_val_fraction: 0.1
+
+model:
+  hidden_size: 64
+  num_layers: 1
+
+train:
+  lr: 1.0e-3
+  batch_size: 1024
+  max_epochs: 50
+  patience: 5
+  eval_batch_size: 8192
+
+wandb:
+  project: yieldsat
+  entity: null
+  mode: online             # online | offline | disabled
