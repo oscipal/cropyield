@@ -1,0 +1,17 @@
+numpy
+pandas
+pyarrow
+xarray
+netCDF4
+h5netcdf
+scipy
+scikit-learn
+torch
+matplotlib
+pyyaml
+wandb
+jupyter
+tabulate
+# optional, only for inspecting raw files
+rasterio
+geopandas

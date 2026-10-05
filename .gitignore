@@ -1,0 +1,17 @@
+# Never commit data or derived arrays
+*.nc
+*.npy
+*.npz
+*.parquet
+*.tif
+*.tiff
+*.zip
+*.tar
+*.tar.gz
+*.7z
+data/
+work/
+wandb/
+__pycache__/
+.ipynb_checkpoints/
+Claude/
