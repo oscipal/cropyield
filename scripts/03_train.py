@@ -17,6 +17,7 @@ from src.config import REPO_ROOT, load_paths, load_yaml  # noqa: E402
 from src.metrics import compute_metrics  # noqa: E402
 from src.models import LSTMRegressor  # noqa: E402
 from src.preprocess import band_stats, normalize  # noqa: E402
+from src.splits import load_splits  # noqa: E402
 
 
 def set_seed(seed: int) -> None:
@@ -91,8 +92,8 @@ def main() -> None:
 
     X = np.load(data_dir / "X.npy", mmap_mode="r")
     meta = pd.read_parquet(data_dir / "meta.parquet")
-    splits = json.loads((paths["splits_dir"] / cfg["splits"]["file"]).read_text())
-    folds = splits["folds"] if args.folds is None else [f for f in splits["folds"] if f["fold"] in args.folds]
+    all_folds = load_splits(paths["splits_dir"] / cfg["splits"]["file"])
+    folds = all_folds if args.folds is None else [f for f in all_folds if f["fold"] in args.folds]
     print(f"{experiment}: X {X.shape}, {len(folds)} folds, device {args.device}")
 
     for fold in folds:

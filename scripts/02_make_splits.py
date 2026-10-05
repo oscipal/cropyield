@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -12,6 +11,7 @@ from sklearn.model_selection import GroupShuffleSplit, StratifiedGroupKFold
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.config import REPO_ROOT, load_paths, load_yaml  # noqa: E402
+from src.splits import load_splits, save_splits  # noqa: E402
 
 
 def main() -> None:
@@ -47,13 +47,22 @@ def main() -> None:
     all_test = [f for fold in folds for f in fold["test_fields"]]
     assert len(all_test) == len(set(all_test)) == meta["field"].nunique()
 
-    out = {"seed": seed, "n_splits": n_splits, "method": "StratifiedGroupKFold(shuffle=True)",
-           "group": "field", "stratify": "farm",
-           "inner_val": f"GroupShuffleSplit(test_size={cfg['splits']['inner_val_fraction']}, random_state=seed+fold)",
-           "folds": folds}
+    field_farm = meta.groupby("field")["farm"].first()
+    pos = {f: i for i, f in enumerate(field_farm.index)}
+    test_fold = np.full(len(field_farm), -1, dtype=np.int8)
+    inner_val = np.zeros((n_splits, len(field_farm)), dtype=bool)
+    for fold in folds:
+        test_fold[[pos[f] for f in fold["test_fields"]]] = fold["fold"]
+        inner_val[fold["fold"], [pos[f] for f in fold["val_fields"]]] = True
+
+    attrs = {"seed": seed, "n_splits": n_splits, "method": "StratifiedGroupKFold(shuffle=True)",
+             "group": "field", "stratify": "farm",
+             "inner_val_method": f"GroupShuffleSplit(test_size={cfg['splits']['inner_val_fraction']}, "
+                                 "random_state=seed+fold)"}
     out_path = paths["splits_dir"] / cfg["splits"]["file"]
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(out, indent=1))
+    save_splits(out_path, field_farm.index.to_numpy(), field_farm.to_numpy(), test_fold, inner_val, attrs)
+    assert load_splits(out_path) == folds
     print(f"wrote {out_path}")
 
 

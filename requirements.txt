@@ -2,6 +2,7 @@ numpy
 pandas
 pyarrow
 xarray
+zarr
 netCDF4
 h5netcdf
 scipy
