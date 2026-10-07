@@ -8,6 +8,9 @@ data:
 # Derived files (.npy, parquet, predictions). Must not be inside the data folders.
 work_dir: /scratch2/oscipal/yieldsat_work
 
+# Split suite (scripts/06_make_split_suite.py): one zarr store, one group per scope/method/crop.
+split_suite: /scratch2/oscipal/yieldsat_splits.zarr
+
 # Repository-relative output folders.
 splits_dir: splits
 docs_dir: docs

@@ -20,6 +20,7 @@ def load_paths(path: str | Path = PATHS_FILE) -> dict:
     out = {k: Path(v) for k, v in cfg["data"].items()}
     out["work_dir"] = Path(cfg["work_dir"])
     out["splits_dir"] = REPO_ROOT / cfg["splits_dir"]
+    out["split_suite"] = Path(cfg["split_suite"])
     out["docs_dir"] = REPO_ROOT / cfg["docs_dir"]
     for key in ("preprocessed", "raw"):
         if out["work_dir"].resolve().is_relative_to(out[key].resolve()):

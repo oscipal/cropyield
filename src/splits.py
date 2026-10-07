@@ -42,3 +42,12 @@ def load_splits(path: str | Path) -> list[dict]:
         folds.append({"fold": int(k), "train_fields": list(fields[train]),
                       "val_fields": list(fields[val]), "test_fields": list(fields[test])})
     return folds
+
+
+def load_split(path: str | Path, scope: str, method: str, crop: str) -> dict:
+    """One split of the split suite (scripts/06_make_split_suite.py): train/val/test fields and attributes."""
+    ds = xr.open_zarr(path, group=f"{scope}/{method}/{crop}", consolidated=False).load()
+    fields = np.array([str(f) for f in ds["field"].values])  # zarr v3 may return StringDType
+    split = ds["split"].values
+    return {"train_fields": list(fields[split == 0]), "val_fields": list(fields[split == 1]),
+            "test_fields": list(fields[split == 2]), "attrs": dict(ds.attrs)}
