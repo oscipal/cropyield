@@ -116,8 +116,8 @@ def get_mapping(ds: xr.Dataset, var: str) -> dict[int, str]:
     if "flag_values" in attrs and "flag_meanings" in attrs:
         meanings = _to_str(attrs["flag_meanings"]).split()
         return {int(v): m for v, m in zip(np.atleast_1d(attrs["flag_values"]), meanings)}
-    # attrs themselves are the mapping
-    if len(attrs) > 1 and (m := _parse_mapping(dict(attrs))):
+    # attrs themselves are the mapping (a single entry only if its key is a code, e.g. {'0': 'soybean'})
+    if (len(attrs) > 1 or all(_is_int(k) for k in attrs)) and (m := _parse_mapping(dict(attrs))):
         return m
     int_valued = {k: v for k, v in attrs.items() if _is_int(v) and not isinstance(v, str)}
     if len(int_valued) > 1 and (m := _parse_mapping(int_valued)):
