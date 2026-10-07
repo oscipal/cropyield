@@ -202,3 +202,43 @@ def field_balanced_mse(err2: np.ndarray, field_codes: np.ndarray) -> float:
     s = np.bincount(field_codes, weights=err2)
     n = np.bincount(field_codes)
     return float(np.mean(s[n > 0] / n[n > 0]))
+
+
+# --------------------------------------------------------------------------- spatial patches
+
+def gather_patches(Xd: torch.Tensor, nbr: torch.Tensor) -> torch.Tensor:
+    """Xd (n, T, F) of one set, nbr (B, K) local row indices (-1 = missing) -> (B, K, T, F + 1).
+    Missing neighbours are zero; the extra last channel is 1 where the neighbour exists."""
+    valid = nbr >= 0
+    x = Xd[nbr.clamp(min=0)]
+    x = x * valid[:, :, None, None].to(x.dtype)
+    v = valid[:, :, None, None].to(x.dtype).expand(-1, -1, x.shape[2], 1)
+    return torch.cat([x, v], dim=-1)
+
+
+class PatchLSTM(nn.Module):
+    """Pixel with its k x k neighbourhood: a small CNN encodes the patch at every time step (weights shared
+    over time), its output plus the centre pixel's own features feed the LSTM of LSTMv2.
+
+    Input xd (B, K=k*k, T, C) from gather_patches, xs (B, S) static features of the centre pixel."""
+
+    def __init__(self, n_dyn: int, n_static: int, k: int = 5, conv_channels: int = 32, hidden_size: int = 128,
+                 num_layers: int = 2, head_size: int = 128, dropout: float = 0.0):
+        super().__init__()
+        self.k = k
+        c = n_dyn + 1  # + neighbour-present channel
+        self.cnn = nn.Sequential(
+            nn.Conv2d(c, conv_channels, 3, padding=1), nn.ReLU(),
+            nn.Conv2d(conv_channels, conv_channels, 3, padding=1), nn.ReLU())
+        # patch summary: CNN features at the centre and averaged over the neighbours present
+        self.lstm = LSTMv2(2 * conv_channels + c + n_static, hidden_size, num_layers, head_size, dropout)
+
+    def forward(self, xd: torch.Tensor, xs: torch.Tensor | None = None) -> torch.Tensor:
+        B, K, T, C = xd.shape
+        img = xd.permute(0, 2, 3, 1).reshape(B * T, C, self.k, self.k)
+        f = self.cnn(img)                                             # (B*T, ch, k, k)
+        present = img[:, -1:]                                          # neighbour-present mask
+        centre = f[:, :, self.k // 2, self.k // 2]
+        mean = (f * present).sum((2, 3)) / present.sum((2, 3)).clamp(min=1)
+        feats = torch.cat([centre, mean, xd[:, K // 2].reshape(B * T, C)], dim=-1).reshape(B, T, -1)
+        return self.lstm(feats, xs)

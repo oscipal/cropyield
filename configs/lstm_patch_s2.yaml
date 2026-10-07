@@ -1,0 +1,45 @@
+# Patch LSTM: LSTM v2 (configs/lstm_v2_s2.yaml), but every pixel is seen with its 5 x 5 neighbourhood
+# (a CNN per time step, then the LSTM). scripts/LSTM/04_train_v2.py; needs scripts/LSTM/06_neighbours.py --k 5.
+name: lstm_patch_s2
+paper_inputs: s2         # paper rows to compare with in 03_report.py
+seed: 42
+
+inputs:
+  dynamic: [s2]
+  static: []
+  indices: [ndvi, ndre, ndmi]        # from raw bands, before z-scoring
+  mask_channel: true                 # 1 = observed time step, 0 = missing
+  categorical: [crop, country]       # one-hot, appended to the static inputs
+  fill_value: 0.0
+
+target:
+  standardize_by: [crop, country]    # z-score yield per group (train stats); [] = off
+
+splits: all
+
+model:
+  type: patch             # lstm = pixel only (v2), patch = pixel + neighbourhood
+  patch_size: 5           # k x k window, 10 m pixels -> 50 m
+  conv_channels: 32
+  hidden_size: 128
+  num_layers: 2
+  head_size: 128
+  dropout: 0.2
+
+train:
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  batch_size: 1024
+  pixels_per_field: 500    # pixels sampled per field and epoch; null = all pixels
+  max_epochs: 100          # epochs are short with field sampling
+  patience: 10             # on field-balanced val MSE (t/ha)
+  eval_batch_size: 4096
+  gpu_data_max_gb: 2.0     # small: the GPU may be shared with other runs
+
+ensemble:
+  n_members: 5             # Deep Ensemble; 1 = single model
+
+wandb:
+  project: yieldsat
+  entity: null
+  mode: online
