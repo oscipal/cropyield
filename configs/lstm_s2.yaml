@@ -1,0 +1,30 @@
+# Pixel LSTM of the YieldSAT benchmark (ref. [36], Pathak et al. 2023), Sentinel-2 only.
+# Trained once per split of the split suite (paths.yaml: split_suite); scripts/LSTM/02_train.py.
+name: lstm_s2
+seed: 42
+
+inputs:
+  # groups: s2, weather, soil, soil_uncertainty, dem, coords; or explicit band names
+  dynamic: [s2]          # vary over time
+  static: []             # constant per pixel, repeated at every time step (input fusion)
+  fill_value: 0.0        # value of missing time steps (outside the season) after z-scoring
+
+splits: all              # "all" or a list like [germany/loyo/rapeseed, world/loro/all]
+
+model:
+  hidden_size: 128
+  num_layers: 2
+  head_size: 128
+
+train:
+  lr: 1.0e-3
+  batch_size: 1024
+  max_epochs: 50
+  patience: 8            # early stopping on val MSE
+  eval_batch_size: 4096
+  gpu_data_max_gb: 3.0   # keep the training tensors on the GPU if they fit, else on the CPU
+
+wandb:
+  project: yieldsat
+  entity: null
+  mode: online           # online | offline | disabled
