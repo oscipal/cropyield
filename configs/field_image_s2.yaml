@@ -1,0 +1,60 @@
+# Field-image model: every field-year as an image, the whole yield map in one pass (temporal encoder per pixel,
+# then a 2D U-Net over the field). scripts/LSTM/07_train_field_image.py, model in scripts/LSTM/field_image.py,
+# plan in .claude/plans/field_image_model.md. Inputs and target scaling as LSTM v2 (configs/lstm_v2_s2.yaml).
+name: field_image_s2
+paper_inputs: s2         # paper rows to compare with in 03_report.py
+seed: 42
+
+inputs:
+  dynamic: [s2]
+  static: []
+  indices: [ndvi, ndre, ndmi]        # from raw bands, before z-scoring
+  mask_channel: true                 # 1 = observed time step, 0 = missing (must stay the last channel)
+  categorical: [crop, country]       # one-hot; input to the encoder and image channels of the U-Net
+  fill_value: 0.0
+
+target:
+  standardize_by: [crop, country]    # z-score yield per group (train stats); [] = off
+
+splits: all
+
+model:
+  encoder:
+    type: lstm            # lstm (as v2) | transformer (temporal attention, mean over observed steps)
+    hidden_size: 128
+    num_layers: 2
+    heads: 4              # transformer only
+    dropout: 0.2
+  embed: 64               # per-pixel embedding scattered into the image
+  unet_channels: [32, 64, 128, 256]   # one entry per level; images are padded to multiples of 2^(levels-1)
+  dropout: 0.2            # at the U-Net bottleneck
+
+train:
+  crop_size: 128          # 10 m pixels; 58 % of fields fit whole, larger ones are cut
+  crops_per_field: 1      # per epoch, re-drawn every epoch (field-balanced)
+  augment: true           # random 90 degree rotations and flips
+  batch_size: 8           # crops per step
+  field_mean_weight: 0.0  # extra loss: squared error of the crop's mean prediction (standardised)
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  scheduler: plateau      # plateau (halve after plateau_patience epochs without val improvement) | cosine | none
+  plateau_patience: 5
+  max_epochs: 200         # one epoch = one crop per training field, i.e. short
+  patience: 15            # on field-balanced val MSE (t/ha)
+  amp: true               # mixed precision (fp16) on the GPU
+  checkpoint_encoder: true  # recompute encoder activations in backward: a batch can hold >100k pixels
+  encoder_chunk: 32768    # pixels per encoder call / checkpoint segment
+  gpu_data_max_gb: 2.0    # training inputs moved to the GPU only if smaller (the GPU may be shared)
+
+predict:
+  tile: 256               # fields with a padded side above this are predicted in tiles
+  overlap: 32             # tile overlap in pixels; overlapping predictions are averaged
+  batch_pixels: 32768     # pixels per encoder call
+
+ensemble:
+  n_members: 5            # Deep Ensemble; 1 = single model (screening)
+
+wandb:
+  project: yieldsat
+  entity: null
+  mode: online

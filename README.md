@@ -38,6 +38,7 @@ configs/
   lstm_s2.yaml            paper LSTM, Sentinel-2 only
   lstm_s2_adm.yaml        paper LSTM, S2 + weather, soil, topography (input fusion)
   lstm_v2_s2.yaml         LSTM v2, Sentinel-2 only
+  field_image_s2.yaml     field-image model (temporal encoder + U-Net over the whole field)
 scripts/
   05_build_field_table.py one row per field-year (physical fields, regions)
   06_make_split_suite.py  builds the 24 splits
@@ -49,6 +50,9 @@ scripts/
     04_train_v2.py        LSTM v2, one ensemble per split
     lstm_lib.py           paper LSTM model, band groups, normalisation
     lstm_v2.py            v2 features, target scaling, model, field sampling
+    07_train_field_image.py  field-image model, one ensemble per split (inputs and outputs as 04)
+    field_image.py        field images from the pixel memmaps, crops, tiles, encoder + U-Net
+    check_field_image.py  data alignment and shape checks (--gpu: memory of a training step)
     paper_lstm_results.yaml   the paper's LSTM results (appendix Tab. 13–18)
 src/
   config.py               loads configs/paths.yaml
@@ -101,8 +105,12 @@ matched by name, since their order differs between the country files.
 python scripts/LSTM/02_train.py --config configs/lstm_s2.yaml        # paper LSTM, S2       (~3 h)
 python scripts/LSTM/02_train.py --config configs/lstm_s2_adm.yaml    # paper LSTM, S2 + ADM (~3 h)
 python scripts/LSTM/04_train_v2.py --config configs/lstm_v2_s2.yaml  # LSTM v2              (~4 h)
+python scripts/LSTM/07_train_field_image.py --config configs/field_image_s2.yaml   # field-image model (not run yet)
 python scripts/LSTM/03_report.py                                     # -> docs/results_lstm.md
 ```
+
+`03_report.py` reports the configs given with `--configs` (default: paper LSTMs, v2, baselines); add
+`configs/field_image_s2.yaml` there to include the field-image model.
 
 Runtimes are for all 24 splits on one RTX 2080 Ti. Each script trains every split of the suite (or only those
 given with `--splits germany/loyo/rapeseed ...`) and skips splits that already have results, so an interrupted run
