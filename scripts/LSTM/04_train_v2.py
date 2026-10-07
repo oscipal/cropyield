@@ -146,9 +146,10 @@ def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run):
     return model, history, best
 
 
-def run_split(split_name, cfg, data, out_dir, device, use_wandb):
+def prepare_split(split_name, cfg, data) -> dict:
+    """Set membership, normalised inputs X[r] = (Xd, Xs), target scaling and field codes of one split
+    (r = 0 train, 1 val, 2 test). Shared with 07_train_field_image.py."""
     dyn, stat, meta, info = data
-    tc = cfg["train"]
     scope, method, crop = split_name.split("/")
     s = load_split(load_paths()["split_suite"], scope, method, crop)
     role_of = {f: r for r, key in ((0, "train_fields"), (1, "val_fields"), (2, "test_fields")) for f in s[key]}
@@ -162,11 +163,6 @@ def run_split(split_name, cfg, data, out_dir, device, use_wandb):
     t0 = time.time()
     spec = FeatureSpec(cfg["inputs"], info).fit(dyn, stat, idx[0], meta)
     X = {r: spec.transform(dyn, stat, idx[r], meta) for r in (0, 1, 2)}
-    if cfg["model"].get("type", "lstm") == "patch":
-        nbr_all = np.load(info["data_dir"] / f"nbr_k{cfg['model']['patch_size']}.npy", mmap_mode="r")
-        X = {r: (*X[r], local_neighbours(nbr_all, idx[r], len(meta))) for r in X}
-    else:
-        X = {r: (*X[r], None) for r in X}
     tscaler = TargetScaler(cfg.get("target", {}).get("standardize_by")).fit(meta, idx[0])
     scal = {r: tscaler.params(meta, idx[r]) for r in (0, 1, 2)}
     y_true = {r: meta["target"].to_numpy(np.float32)[idx[r]] for r in (0, 1, 2)}
@@ -174,36 +170,26 @@ def run_split(split_name, cfg, data, out_dir, device, use_wandb):
     codes = {r: pd.factorize(meta["field"].iloc[idx[r]])[0] for r in (0, 1, 2)}
     print(f"  features: {len(spec.dyn_names)} dynamic {spec.dyn_names}, {X[0][1].shape[1]} static; "
           f"prepared in {time.time() - t0:.0f} s", flush=True)
+    return {"split": s, "idx": idx, "spec": spec, "X": X, "tscaler": tscaler, "scal": scal, "y_true": y_true,
+            "y_z": y_z, "codes": codes}
 
-    gb = sum(t.element_size() * t.nelement() for t in X[0] if t is not None) / 1e9
-    if str(device).startswith("cuda") and gb <= tc["gpu_data_max_gb"]:
-        X[0] = tuple(t.to(device) if t is not None else None for t in X[0])
-    print(f"  training data {gb:.1f} GB on {X[0][0].device}", flush=True)
 
-    run = None
-    if use_wandb:
-        import wandb
-        run = wandb.init(project=cfg["wandb"]["project"], entity=cfg["wandb"]["entity"], mode=cfg["wandb"]["mode"],
-                         group=cfg["name"], name=f"{cfg['name']}_{split_name.replace('/', '_')}",
-                         config={**cfg, "split": split_name, "n_train_pixels": len(idx[0])}, reinit=True)
+def init_wandb(cfg, split_name, n_train_pixels):
+    import wandb
+    return wandb.init(project=cfg["wandb"]["project"], entity=cfg["wandb"]["entity"], mode=cfg["wandb"]["mode"],
+                      group=cfg["name"], name=f"{cfg['name']}_{split_name.replace('/', '_')}",
+                      config={**cfg, "split": split_name, "n_train_pixels": n_train_pixels}, reinit=True)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
+
+def pred_frames(meta, idx) -> dict:
+    """Per-pixel output tables of val and test; members add pred_m<i> columns."""
     cols = ["pixel", "country", "field", "farm", "crop", "year", "row", "col", "target"]
-    preds = {r: meta.iloc[idx[r]][cols].reset_index(drop=True) for r in (1, 2)}
-    history, bests = [], []
-    n_members = cfg.get("ensemble", {}).get("n_members", 1)
-    for m in range(n_members):
-        model, hist, best = train_member(m, X, y_z, y_true, codes, scal, cfg, device, run)
-        history += hist
-        bests.append({"member": m, "best_epoch": best["epoch"], "best_val_field_mse": best["score"],
-                      "epochs_run": len(hist)})
-        torch.save(model.state_dict(), out_dir / f"model_m{m}.pt")
-        for r in (1, 2):
-            preds[r][f"pred_m{m}"] = predict(model, X[r], tc["eval_batch_size"], device) * scal[r][1] + scal[r][0]
-        del model
-    del X
-    torch.cuda.empty_cache()
+    return {r: meta.iloc[idx[r]][cols].reset_index(drop=True) for r in (1, 2)}
 
+
+def save_results(split_name, cfg, prep, meta, preds, history, bests, out_dir, run):
+    """Ensemble mean, metrics and output files of one split (layout in the module docstring)."""
+    idx, n_members = prep["idx"], len(bests)
     member_cols = [f"pred_m{m}" for m in range(n_members)]
     metrics, metrics_members = {}, {}
     for r in (1, 2):
@@ -217,13 +203,13 @@ def run_split(split_name, cfg, data, out_dir, device, use_wandb):
     member_mean = {role: {g: {k: float(np.mean([mm[g][k] for mm in ms])) for k in METRIC_KEYS}
                           for g in ms[0]} for role, ms in metrics_members.items()}
     pd.DataFrame(history).to_csv(out_dir / "history.csv", index=False)
-    summary = {"split": split_name, "config": cfg["name"], "split_attrs": s["attrs"],
+    summary = {"split": split_name, "config": cfg["name"], "split_attrs": prep["split"]["attrs"],
                "best_epoch": int(np.median([b["best_epoch"] for b in bests])), "members": bests,
                "epochs_run": int(np.sum([b["epochs_run"] for b in bests])),
                "n_pixels": {ROLE_NAMES[r]: int(len(idx[r])) for r in idx},
                "n_fields": {ROLE_NAMES[r]: int(meta["field"].iloc[idx[r]].nunique()) for r in idx},
                "metrics": metrics, "metrics_member_mean": member_mean, "metrics_members": metrics_members,
-               "features": spec.state(), "target_scaler": tscaler.state()}
+               "features": prep["spec"].state(), "target_scaler": prep["tscaler"].state()}
     (out_dir / "metrics.json").write_text(json.dumps(summary, indent=1, default=str))
 
     m, mm = metrics["test"]["all"], member_mean["test"]["all"]
@@ -236,9 +222,45 @@ def run_split(split_name, cfg, data, out_dir, device, use_wandb):
         run.finish()
 
 
-def main() -> None:
+def run_split(split_name, cfg, data, out_dir, device, use_wandb):
+    dyn, stat, meta, info = data
+    tc = cfg["train"]
+    prep = prepare_split(split_name, cfg, data)
+    idx, X, scal = prep["idx"], prep["X"], prep["scal"]
+    if cfg["model"].get("type", "lstm") == "patch":
+        nbr_all = np.load(info["data_dir"] / f"nbr_k{cfg['model']['patch_size']}.npy", mmap_mode="r")
+        X = {r: (*X[r], local_neighbours(nbr_all, idx[r], len(meta))) for r in X}
+    else:
+        X = {r: (*X[r], None) for r in X}
+
+    gb = sum(t.element_size() * t.nelement() for t in X[0] if t is not None) / 1e9
+    if str(device).startswith("cuda") and gb <= tc["gpu_data_max_gb"]:
+        X[0] = tuple(t.to(device) if t is not None else None for t in X[0])
+    print(f"  training data {gb:.1f} GB on {X[0][0].device}", flush=True)
+
+    run = init_wandb(cfg, split_name, len(idx[0])) if use_wandb else None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    preds = pred_frames(meta, idx)
+    history, bests = [], []
+    n_members = cfg.get("ensemble", {}).get("n_members", 1)
+    for m in range(n_members):
+        model, hist, best = train_member(m, X, prep["y_z"], prep["y_true"], prep["codes"], scal, cfg, device, run)
+        history += hist
+        bests.append({"member": m, "best_epoch": best["epoch"], "best_val_field_mse": best["score"],
+                      "epochs_run": len(hist)})
+        torch.save(model.state_dict(), out_dir / f"model_m{m}.pt")
+        for r in (1, 2):
+            preds[r][f"pred_m{m}"] = predict(model, X[r], tc["eval_batch_size"], device) * scal[r][1] + scal[r][0]
+        del model
+    del X, prep["X"]
+    torch.cuda.empty_cache()
+    save_results(split_name, cfg, prep, meta, preds, history, bests, out_dir, run)
+
+
+def main(run_split=run_split, default_config: str = "lstm_v2_s2.yaml") -> None:
+    """Command line shared with 07_train_field_image.py, which passes its own run_split."""
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default=str(REPO_ROOT / "configs" / "lstm_v2_s2.yaml"))
+    ap.add_argument("--config", default=str(REPO_ROOT / "configs" / default_config))
     ap.add_argument("--splits", nargs="*", default=None, help="override config, e.g. germany/loyo/rapeseed")
     ap.add_argument("--overwrite", action="store_true", help="retrain splits that already have metrics.json")
     ap.add_argument("--no-wandb", action="store_true")
