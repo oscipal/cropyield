@@ -1,0 +1,5 @@
+# Baseline: every test pixel gets the training mean of its crop x country (falls back to crop, then overall).
+# scripts/LSTM/05_baseline_mean.py
+name: mean_crop_country
+paper_inputs: s2         # paper rows to compare with in 03_report.py
+group_by: [crop, country]

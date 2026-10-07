@@ -39,6 +39,12 @@ def summary(gr: pd.DataFrame, cfgs: list[dict], paper: dict, inp_key: dict) -> l
     """Summary over the country x crop subsets of all splits (world single-crop splits are left out: they
     equal the south_america / germany splits)."""
     g = gr[~(gr["scope"].eq("world") & gr["crop"].ne("all"))].copy()
+    # only subsets every variant has results for, so medians and counts compare the same test sets
+    n_variants = g["config"].nunique()
+    common = g.groupby(["split", "subset"])["config"].nunique()
+    common = common[common == n_variants].index
+    n_dropped = g.set_index(["split", "subset"]).index.nunique() - len(common)
+    g = g.set_index(["split", "subset"]).loc[common].reset_index()
     paper_inp = {c["name"]: c.get("paper_inputs") or inp_key.get(c["name"], "s2") for c in cfgs}
     variants = []
     for c in cfgs:
@@ -79,7 +85,8 @@ def summary(gr: pd.DataFrame, cfgs: list[dict], paper: dict, inp_key: dict) -> l
                  f"field R² > `{base}`": "–", "field R² ≥ paper": "–"})
     L = ["## Summary", "",
          "Test metrics per country × crop subset of every split (the `world` single-crop splits are left out, "
-         "they equal the `south_america` / `germany` ones), aggregated per variant. Counts compare the same "
+         "they equal the `south_america` / `germany` ones), aggregated per variant. Only subsets every variant "
+         f"has results for are included ({n_dropped} left out). Counts compare the same "
          "split and subset. The paper row uses the paper's LOYO/LORO mean for each of the same subsets; "
          "paper values are averages over many held-out years/regions, ours are single held-out sets.", "",
          pd.DataFrame(rows).to_markdown(index=False), ""]
@@ -92,10 +99,34 @@ def summary(gr: pd.DataFrame, cfgs: list[dict], paper: dict, inp_key: dict) -> l
     return L
 
 
+def overview(ov: pd.DataFrame, cfgs: list[dict]) -> list[str]:
+    """One row per split (scope, split method, crop), R² of every variant: baselines first, then the models."""
+    names = [c["name"] for c in cfgs]
+    order = [n for n in names if n.startswith("mean")] + [n for n in names if not n.startswith("mean")]
+    L = ["## Overview: baselines and LSTMs per split", "",
+         "Test R² of every split. `mean` predicts the training mean yield everywhere; `mean_crop_country` "
+         "the training mean of the pixel's crop in its country. A model is only useful where it beats "
+         "`mean_crop_country`: on the pooled `all` splits that baseline alone reaches a high R², because "
+         "yields differ strongly between crops and countries. `lstm_v2_s2` is the 5-member ensemble. "
+         "`–`: not (yet) trained on this split.", ""]
+    for level in ("field", "pixel"):
+        t = ov.pivot_table(index="split", columns="config", values=f"{level}_r2", sort=False)
+        rows = []
+        for split in ov["split"].unique():
+            scope, method, crop = split.split("/")
+            row = {"scope": scope, "split method": method, "crop": crop}
+            for n in order:
+                row[n] = fmt(t.loc[split, n]) if n in t.columns else "–"
+            rows.append(row)
+        L += [f"### {level.capitalize()}-level R²", "", pd.DataFrame(rows).to_markdown(index=False), ""]
+    return L
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--configs", nargs="*", default=[str(REPO_ROOT / "configs" / f"{n}.yaml")
-                                                     for n in ("lstm_s2", "lstm_s2_adm", "lstm_v2_s2")])
+                                                     for n in ("lstm_s2", "lstm_s2_adm", "lstm_v2_s2",
+                                                               "baseline_mean", "baseline_mean_crop")])
     ap.add_argument("--out", default=str(REPO_ROOT / "docs" / "results_lstm.md"))
     args = ap.parse_args()
 
@@ -180,7 +211,8 @@ def main() -> None:
             rows.append(row)
         L += [f"### {level.capitalize()} level", "", pd.DataFrame(rows).to_markdown(index=False), ""]
 
-    info = ov[["config", "split", "n_fields", "n_pixels", "n_train_fields", "best_epoch", "epochs_run"]]
+    info = ov[ov["epochs_run"] > 0][["config", "split", "n_fields", "n_pixels", "n_train_fields", "best_epoch",
+                                     "epochs_run"]]
     L += ["### Training", "", info.to_markdown(index=False), ""]
 
     L += ["## Test results per country × crop, next to the paper", "",
@@ -200,6 +232,7 @@ def main() -> None:
             rows.append(row)
         L += [f"### {level.capitalize()} level", "", pd.DataFrame(rows).to_markdown(index=False), ""]
 
+    L += overview(ov, cfgs)
     Path(args.out).write_text("\n".join(L))
     print(f"wrote {args.out} ({len(ov)} runs)")
 

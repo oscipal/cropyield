@@ -1,0 +1,4 @@
+# Baseline: every test pixel gets the mean yield of the split's training pixels. scripts/LSTM/05_baseline_mean.py
+name: mean
+paper_inputs: s2         # paper rows to compare with in 03_report.py
+group_by: []
