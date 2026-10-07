@@ -1,7 +1,7 @@
-"""Lazy access to the preprocessed YieldSAT NetCDF.
+"""Lazy access to the preprocessed YieldSAT NetCDF files: opening and decoded pixel metadata.
 
-The German file is ~7 GB float32, so nothing here loads the full feature array.
-Features are read in contiguous pixel blocks and filtered in memory.
+The files are 7-63 GB float32, so nothing here loads the feature array; scripts/LSTM/01_extract.py
+reads it in pixel blocks.
 """
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-S2_BANDS = ["B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B09", "B11", "B12"]
 CATEGORICAL_VARS = [
     "crop",
     "year",
@@ -27,10 +26,8 @@ CATEGORICAL_VARS = [
 ]
 PIXEL_VARS = ["row", "col", "target"]
 RENAME = {"farm_identifier": "farm", "field_shared_name": "field"}
-FEATURE_VAR = "sample"
 
 _MAPPING_KEYS = ("mapping", "categories", "labels", "classes", "encoding", "codes", "dictionary", "values")
-_BAND_NAME_KEYS = ("bands", "band_names", "features", "feature_names", "channels", "variables")
 
 
 # --------------------------------------------------------------------------- opening
@@ -165,96 +162,3 @@ def load_meta(ds: xr.Dataset) -> pd.DataFrame:
     if "field" in meta and "year" in meta:
         meta["field_year"] = meta["field"].astype(str) + "_" + meta["year"].astype(str)
     return meta
-
-
-# --------------------------------------------------------------------------- feature access
-
-def _decode_names(values) -> list[str]:
-    return [_to_str(v) for v in np.asarray(values).ravel()]
-
-
-class FeatureReader:
-    """Uniform block reader for features stored either
-
-    * stacked: one variable ``sample`` with dims (pixel, time, band) in any order, band names in a
-      coordinate or attribute, or
-    * separate: one variable per band with dims (pixel, time) or (pixel,).
-    """
-
-    def __init__(self, ds: xr.Dataset, var: str = FEATURE_VAR):
-        self.ds = ds
-        self.pdim = pixel_dim(ds)
-        self.n_pixels = ds.sizes[self.pdim]
-        if var in ds.data_vars and ds[var].ndim == 3:
-            self.mode = "stacked"
-            self.da = ds[var]
-            self.bdim, self.names = self._find_band_dim(ds, self.da)
-            self.tdim = next(d for d in self.da.dims if d not in (self.pdim, self.bdim))
-        else:
-            self.mode = "separate"
-            skip = set(CATEGORICAL_VARS) | set(PIXEL_VARS) | {"times"}
-            self.names = [
-                v for v in ds.data_vars
-                if v not in skip and ds[v].dims and ds[v].dims[0] == self.pdim and ds[v].ndim in (1, 2)
-            ]
-            two_d = [v for v in self.names if ds[v].ndim == 2]
-            self.tdim = ds[two_d[0]].dims[1] if two_d else None
-        self.n_times = ds.sizes[self.tdim] if self.tdim else 1
-
-    def _find_band_dim(self, ds: xr.Dataset, da: xr.DataArray) -> tuple[str, list[str]]:
-        other = [d for d in da.dims if d != self.pdim]
-        for d in other:
-            if d in ds.coords and ds[d].dtype.kind in "OSU":
-                return d, _decode_names(ds[d].values)
-        for source in (da.attrs, ds.attrs):
-            for key in _BAND_NAME_KEYS:
-                if key in source:
-                    raw = source[key]
-                    names = _parse_mapping(raw)
-                    names = [names[k] for k in sorted(names)] if names else _to_str(raw).replace(",", " ").split()
-                    for d in other:
-                        if ds.sizes[d] == len(names):
-                            return d, names
-        raise KeyError(f"Cannot identify band names for '{da.name}' with dims {da.dims}")
-
-    def __repr__(self) -> str:
-        return f"FeatureReader(mode={self.mode}, n_pixels={self.n_pixels}, n_times={self.n_times}, n_features={len(self.names)})"
-
-    def read(self, names: list[str], start: int, stop: int) -> np.ndarray:
-        """Return float32 array (n, time, len(names)) for pixels [start, stop)."""
-        missing = [n for n in names if n not in self.names]
-        if missing:
-            raise KeyError(f"Features not found: {missing}")
-        sl = {self.pdim: slice(start, stop)}
-        if self.mode == "stacked":
-            idx = [self.names.index(n) for n in names]
-            order = np.argsort(idx)
-            sorted_idx = [idx[i] for i in order]
-            arr = self.da.isel({**sl, self.bdim: sorted_idx}).transpose(self.pdim, self.tdim, self.bdim).values
-            arr = arr[..., np.argsort(order)]
-        else:
-            parts = []
-            for n in names:
-                a = self.ds[n].isel(sl).values
-                parts.append(np.repeat(a[:, None], self.n_times, axis=1) if a.ndim == 1 else a)
-            arr = np.stack(parts, axis=-1)
-        return arr.astype(np.float32, copy=False)
-
-    def extract(self, names: list[str], mask: np.ndarray, out: np.ndarray | None = None,
-                block: int = 100_000, verbose: bool = True) -> np.ndarray:
-        """Read only the pixels where ``mask`` is True. ``out`` may be a pre-allocated memmap."""
-        n_sel = int(mask.sum())
-        if out is None:
-            out = np.empty((n_sel, self.n_times, len(names)), dtype=np.float32)
-        pos = 0
-        for start, stop in iter_blocks(self.n_pixels, block):
-            m = mask[start:stop]
-            if not m.any():
-                continue
-            arr = self.read(names, start, stop)[m]
-            out[pos:pos + len(arr)] = arr
-            pos += len(arr)
-            if verbose:
-                print(f"  read pixels {start:,}-{stop:,}: {pos:,}/{n_sel:,} selected", flush=True)
-        assert pos == n_sel
-        return out

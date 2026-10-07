@@ -4,15 +4,8 @@ pyarrow
 xarray
 zarr
 netCDF4
-h5netcdf
-scipy
-scikit-learn
 torch
-matplotlib
 pyyaml
 wandb
-jupyter
 tabulate
-# optional, only for inspecting raw files
-rasterio
-geopandas
+rasterio   # scripts/05_build_field_table.py (raw GeoTIFF footprints)

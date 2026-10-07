@@ -1,4 +1,4 @@
-"""Field- and pixel-level metrics as in the paper (mean +- std over folds) plus pooled values."""
+"""Field- and pixel-level metrics as in the paper (R2 and RMSE)."""
 from __future__ import annotations
 
 import numpy as np
@@ -36,19 +36,3 @@ def compute_metrics(preds: pd.DataFrame) -> dict:
         "n_fields": len(fields),
         "n_pixels": len(preds),
     }
-
-
-def fold_metrics(preds: pd.DataFrame) -> pd.DataFrame:
-    rows = [{"fold": k, **compute_metrics(g)} for k, g in preds.groupby("fold")]
-    return pd.DataFrame(rows)
-
-
-def summarize(preds: pd.DataFrame) -> dict:
-    """Mean and std over folds (population std, ddof=0) and pooled over all test predictions."""
-    per_fold = fold_metrics(preds)
-    pooled = compute_metrics(preds)
-    out = {"per_fold": per_fold, "pooled": pooled}
-    for m in ("field_r2", "field_rmse", "pixel_r2", "pixel_rmse"):
-        out[f"{m}_mean"] = float(per_fold[m].mean())
-        out[f"{m}_std"] = float(per_fold[m].std(ddof=0))
-    return out
