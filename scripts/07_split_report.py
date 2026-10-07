@@ -130,8 +130,10 @@ def main() -> None:
         "under different IDs. Field-years whose pixel footprints overlap (IoU > 0.5 on a 20 m grid) form one "
         "physical field. This includes double cropping (two crops on the same land in one season, common in "
         "Brazil) and a few duplicated records.",
-        "- **Region:** the farm, except that farms sharing a physical field are merged (8 merged regions in "
-        "Argentina). In `loro`, every region and therefore every physical field is entirely in one set. "
+        "- **Region:** the farm, except that farms are merged when they share a physical field or when any of "
+        "their fields lie within 10 km of each other (edge to edge, on the field footprints). Fields of "
+        "different regions are therefore more than 10 km apart, and a held-out region is never next to a "
+        "training region. In `loro`, every region and therefore every physical field is entirely in one set. "
         "In `loyo`, the same physical field appears in train in other years by design.",
         "- **Choosing the split:** among all year pairs (`loyo`) or 20,000 random region assignments "
         "(`loro`, seed 42), the split with the lowest score is kept. Score, summed over val and test: "

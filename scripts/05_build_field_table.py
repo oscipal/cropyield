@@ -6,7 +6,9 @@ field_shared_name is per field-year, so the same physical field recurs across ye
 names. physical_field groups field-years whose pixel footprints overlap (IoU > 0.5 on a 20 m grid; pixel
 positions from row/col and the raw GeoTIFF transform). Double cropping (two field-years of the same year
 on the same land) is therefore one physical field.
-region is the farm, except that farms sharing a physical field are merged (connected components).
+region is the farm, except that farms are merged (connected components) when they share a physical field
+or when any of their fields lie within MERGE_KM of each other (edge to edge), so that held-out regions in
+leave-regions-out splits are never next to training regions.
 """
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ COUNTRY_CRS = {"Germany": "EPSG:32632", "Argentina": "EPSG:32720", "Brazil": "EP
                "Uruguay": "EPSG:32721"}
 IOU_MIN = 0.5
 CELL_M = 20.0
+MERGE_KM = 10.0  # farms with fields closer than this form one region (fields of different countries are >140 km apart)
 
 
 class UnionFind:
@@ -111,12 +114,36 @@ def physical_ids(names: np.ndarray, cells: list[set | None]) -> np.ndarray:
     return np.array([first[roots[i]] for i in range(len(names))])
 
 
-def regions(fields: pd.DataFrame) -> np.ndarray:
-    """Farms linked by a shared physical field form one region."""
+def outline(cells: set) -> np.ndarray:
+    """Centres (m) of the cells on the border of a footprint: enough for edge-to-edge distances."""
+    c = np.array(sorted(cells))
+    inner = [(x, y) for x, y in c if {(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)} <= cells]
+    border = np.array(sorted(set(map(tuple, c)) - set(inner)))
+    return (border + 0.5) * CELL_M
+
+
+def regions(fields: pd.DataFrame, cells: list[set | None]) -> np.ndarray:
+    """Farms linked by a shared physical field or by fields within MERGE_KM form one region."""
+    farm = fields["farm"].to_numpy()
     uf = UnionFind(fields["farm"].unique())
     for farms in fields.groupby("physical_field")["farm"].unique():
         for f in farms[1:]:
             uf.union(farms[0], f)
+    # proximity: candidate pairs from bounding boxes, exact edge distance on the footprint outlines
+    gap = MERGE_KM * 1000
+    ok = [i for i, c in enumerate(cells) if c]
+    pts = {i: outline(cells[i]) for i in ok}
+    bb = np.array([[*pts[i].min(0), *pts[i].max(0)] for i in ok])
+    for j, i in enumerate(ok):
+        dx = np.maximum(0, np.maximum(bb[:, 0] - bb[j, 2], bb[j, 0] - bb[:, 2]))
+        dy = np.maximum(0, np.maximum(bb[:, 1] - bb[j, 3], bb[j, 1] - bb[:, 3]))
+        for c in np.flatnonzero(np.hypot(dx, dy) <= gap):
+            k = ok[c]
+            if k <= i or uf.find(farm[i]) == uf.find(farm[k]):
+                continue
+            d = np.sqrt(((pts[i][:, None, :] - pts[k][None, :, :]) ** 2).sum(-1)).min() - CELL_M
+            if d <= gap:
+                uf.union(farm[i], farm[k])
     roots = uf.groups()
     members: dict[str, list[str]] = {}
     for farm, root in roots.items():
@@ -145,7 +172,7 @@ def main() -> None:
         if missing:
             print(f"WARNING {country}: {missing} field-years without raw DEM; each is its own physical field")
         fields["physical_field"] = physical_ids(fields["field"].to_numpy(), cells)
-        fields["region"] = regions(fields)
+        fields["region"] = regions(fields, cells)
         n_merged = (fields.groupby("region")["farm"].nunique() > 1).sum()
         print(f"{country}: {len(fields)} field-years, {fields['physical_field'].nunique()} physical fields, "
               f"{fields['farm'].nunique()} farms -> {fields['region'].nunique()} regions "

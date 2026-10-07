@@ -74,8 +74,10 @@ python scripts/06_make_split_suite.py      # -> split_suite (zarr)
 python scripts/07_split_report.py          # -> docs/splits.md
 ```
 
-The unit of a split is the field-year; pixels of a field are never split. In `loro`, every physical field (the
-same land across years) stays on one side. `docs/splits.md` explains how the splits are chosen. Load one with
+The unit of a split is the field-year; pixels of a field are never split. A region is a farm, merged with other
+farms that share a field or have fields within 10 km, so in `loro` every physical field (the same land across
+years) stays on one side and held-out regions are more than 10 km from any training field. `docs/splits.md`
+explains how the splits are chosen. Load one with
 
 ```python
 from src.splits import load_split
