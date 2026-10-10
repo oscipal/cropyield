@@ -43,7 +43,7 @@ train:
   patience: 15            # on field-balanced val MSE (t/ha)
   amp: true               # mixed precision (fp16) on the GPU
   checkpoint_encoder: true  # recompute encoder activations in backward: a batch can hold >100k pixels
-  encoder_chunk: 32768    # pixels per encoder call / checkpoint segment
+  encoder_chunk: 8192     # pixels per checkpoint segment; peak GPU memory of a full 8 x 128^2 batch: 2.2 GB (32768: 7.9 GB)
   gpu_data_max_gb: 2.0    # training inputs moved to the GPU only if smaller (the GPU may be shared)
 
 predict:
