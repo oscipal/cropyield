@@ -1,0 +1,63 @@
+# Screening variant of configs/field_image_s2.yaml (single model): field-mean loss term, weight 1.
+# Everything else as field_image_s2. scripts/LSTM/07_train_field_image.py
+name: field_image_s2_fmean
+paper_inputs: s2
+seed: 42
+inputs:
+  dynamic:
+  - s2
+  static: []
+  indices:
+  - ndvi
+  - ndre
+  - ndmi
+  mask_channel: true
+  categorical:
+  - crop
+  - country
+  fill_value: 0.0
+target:
+  standardize_by:
+  - crop
+  - country
+splits: all
+model:
+  encoder:
+    type: lstm
+    hidden_size: 128
+    num_layers: 2
+    heads: 4
+    dropout: 0.2
+  embed: 64
+  unet_channels:
+  - 32
+  - 64
+  - 128
+  - 256
+  dropout: 0.2
+train:
+  crop_size: 128
+  crops_per_field: 1
+  augment: true
+  batch_size: 8
+  field_mean_weight: 1.0
+  lr: 0.001
+  weight_decay: 0.0001
+  scheduler: plateau
+  plateau_patience: 5
+  max_epochs: 200
+  patience: 15
+  amp: true
+  checkpoint_encoder: true
+  encoder_chunk: 8192
+  gpu_data_max_gb: 2.0
+predict:
+  tile: 256
+  overlap: 32
+  batch_pixels: 32768
+ensemble:
+  n_members: 1
+wandb:
+  project: yieldsat
+  entity: null
+  mode: online
