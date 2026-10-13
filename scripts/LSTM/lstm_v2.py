@@ -48,6 +48,18 @@ class FeatureSpec:
     def dyn_names(self) -> list[str]:
         return self.dyn_bands + self.indices + (["observed"] if self.mask_channel else [])
 
+    @property
+    def obs_index(self) -> int | None:
+        """Column of the observed mask in the dynamic input (last), None without mask channel."""
+        return len(self.dyn_names) - 1 if self.mask_channel else None
+
+    @property
+    def jitter_cols(self) -> list[int]:
+        """Spectral columns (S2 bands and indices; not weather, not the mask) for spectral_noise."""
+        s2 = set(expand_bands(["s2"], self.dyn_bands))
+        return [i for i, n in enumerate(self.dyn_names[:len(self.dyn_bands) + len(self.indices)])
+                if n in s2 or n in self.indices]
+
     def build_dyn(self, raw: np.ndarray) -> np.ndarray:
         """raw (n, T, 16) -> (n, T, F) float32; NaN where missing, except the mask channel."""
         raw = np.asarray(raw, dtype=np.float32)
@@ -202,6 +214,58 @@ def field_balanced_mse(err2: np.ndarray, field_codes: np.ndarray) -> float:
     s = np.bincount(field_codes, weights=err2)
     n = np.bincount(field_codes)
     return float(np.mean(s[n > 0] / n[n > 0]))
+
+
+# --------------------------------------------------------------------------- augmentation
+
+def augment_batch(xd: torch.Tensor, aug: dict, gen: torch.Generator, obs_index: int | None,
+                  jitter_cols: list[int], n_feat: int, fill: float = 0.0) -> torch.Tensor:
+    """Season-shift augmentation of a training batch, pixel input (B, T, F) or patch input (B, K, T, F + 1).
+
+    Time axis is -2; channels >= n_feat (neighbour-present) are untouched. Each sample gets one transform
+    shared by all its neighbours. Steps that are shifted in from outside or dropped become `fill` with
+    observed = 0 (if there is a mask channel).
+      time_shift: s       shift every sample by k in [-s, s] steps
+      step_dropout: p     drop each observed step with probability p
+      spectral_noise: s   additive N(0, s) per sample and spectral channel, observed steps only
+    """
+    if not aug:
+        return xd
+    patch = xd.dim() == 4
+    x = xd if patch else xd[:, None]                      # (B, K, T, C)
+    B, K, T, C = x.shape
+    dev = x.device
+    feat = x[..., :n_feat]
+    rest = x[..., n_feat:]
+    if obs_index is None:
+        obs = torch.ones(B, 1, T, 1, dtype=torch.bool, device=dev)
+    else:
+        obs = feat[:, K // 2:K // 2 + 1, :, obs_index:obs_index + 1] > 0.5   # centre pixel's mask
+    keep = torch.ones(B, 1, T, 1, dtype=torch.bool, device=dev)
+
+    s = int(aug.get("time_shift", 0))
+    if s > 0:
+        k = torch.randint(-s, s + 1, (B, 1, 1, 1), generator=gen, device=dev)
+        src = torch.arange(T, device=dev).view(1, 1, T, 1) - k            # (B, 1, T, 1)
+        inside = (src >= 0) & (src < T)
+        src = src.clamp(0, T - 1)
+        feat = torch.gather(feat, 2, src.expand(B, K, T, n_feat))
+        obs = torch.gather(obs, 2, src)
+        keep &= inside
+    p = float(aug.get("step_dropout", 0.0))
+    if p > 0:
+        keep &= torch.rand(B, 1, T, 1, generator=gen, device=dev) >= p
+    sd = float(aug.get("spectral_noise", 0.0))
+    if sd > 0 and jitter_cols:
+        noise = torch.zeros(B, 1, 1, n_feat, device=dev, dtype=feat.dtype)
+        noise[..., jitter_cols] = (torch.randn(B, 1, 1, len(jitter_cols), generator=gen, device=dev) * sd
+                                   ).to(feat.dtype)
+        feat = feat + noise * (obs & keep).to(feat.dtype)
+    feat = torch.where(keep, feat, torch.full_like(feat, fill))
+    if obs_index is not None:
+        feat[..., obs_index] = feat[..., obs_index] * keep.squeeze(-1).to(feat.dtype)
+    out = torch.cat([feat, rest], dim=-1)
+    return out if patch else out[:, 0]
 
 
 # --------------------------------------------------------------------------- spatial patches

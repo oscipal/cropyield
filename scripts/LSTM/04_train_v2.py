@@ -27,8 +27,8 @@ import torch  # noqa: E402
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1]))
 sys.path.insert(0, str(HERE))
-from lstm_v2 import (FeatureSpec, LSTMv2, PatchLSTM, TargetScaler, field_balanced_mse,  # noqa: E402
-                     gather_patches, sample_per_field)
+from lstm_v2 import (FeatureSpec, LSTMv2, PatchLSTM, TargetScaler, augment_batch,  # noqa: E402
+                     field_balanced_mse, gather_patches, sample_per_field)
 from src.config import REPO_ROOT, load_paths, load_yaml  # noqa: E402
 from src.metrics import compute_metrics  # noqa: E402
 from src.splits import load_split  # noqa: E402
@@ -97,7 +97,7 @@ def group_metrics(preds: pd.DataFrame, col: str = "pred") -> dict:
     return out
 
 
-def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run):
+def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run, spec=None):
     """Train one model; early stopping on the field-balanced val MSE in t/ha. Returns model and history."""
     tc, mc = cfg["train"], cfg["model"]
     seed = cfg["seed"] + 1000 * member
@@ -107,6 +107,10 @@ def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run):
     opt = torch.optim.AdamW(model.parameters(), lr=tc["lr"], weight_decay=tc.get("weight_decay", 0.0))
     loss_fn = torch.nn.MSELoss()
     y_tr = torch.from_numpy(y_z)
+    aug = tc.get("augment") or {}
+    if aug:
+        n_feat = X[0][0].shape[-1]
+        gen = torch.Generator(device=device).manual_seed(seed)
 
     history, best, bad = [], {"score": np.inf, "epoch": -1, "state": None}, 0
     for epoch in range(tc["max_epochs"]):
@@ -118,6 +122,8 @@ def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run):
             if len(b) < 2:  # BatchNorm needs more than one sample
                 continue
             xd, xs = batch(X[0], b, device)
+            if aug:
+                xd = augment_batch(xd, aug, gen, spec.obs_index, spec.jitter_cols, n_feat, spec.fill)
             yb = y_tr[b].to(device, non_blocking=True)
             opt.zero_grad(set_to_none=True)
             loss = loss_fn(model(xd, xs), yb)
@@ -244,7 +250,8 @@ def run_split(split_name, cfg, data, out_dir, device, use_wandb):
     history, bests = [], []
     n_members = cfg.get("ensemble", {}).get("n_members", 1)
     for m in range(n_members):
-        model, hist, best = train_member(m, X, prep["y_z"], prep["y_true"], prep["codes"], scal, cfg, device, run)
+        model, hist, best = train_member(m, X, prep["y_z"], prep["y_true"], prep["codes"], scal, cfg, device, run,
+                                          prep["spec"])
         history += hist
         bests.append({"member": m, "best_epoch": best["epoch"], "best_val_field_mse": best["score"],
                       "epochs_run": len(hist)})
