@@ -43,19 +43,26 @@ def check(sub: pd.DataFrame, role: np.ndarray, method: str) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--trials", type=int, default=20_000, help="random assignments tried per LORO split")
+    ap.add_argument("--scopes", nargs="*", default=list(SCOPES), choices=list(SCOPES))
+    ap.add_argument("--methods", nargs="*", default=list(METHODS), choices=list(METHODS))
+    ap.add_argument("--crops", nargs="*", default=None, help="e.g. all; default: every crop plus all")
     args = ap.parse_args()
     paths = load_paths()
     fields = pd.read_parquet(paths["work_dir"] / "fields.parquet")
     store = paths["split_suite"]
-    if store.exists():
+    # a full run rebuilds the store; with any filter only the selected groups are (re)written
+    partial = (set(args.scopes), set(args.methods), args.crops) != (set(SCOPES), set(METHODS), None)
+    if store.exists() and not partial:
         shutil.rmtree(store)
 
     summary = []
-    for scope in SCOPES:
-        crops = sorted(subset(fields, scope, "all")["crop"].unique())
+    for scope in args.scopes:
         for method, fn in METHODS.items():
-            for crop in crops + ["all"]:
-                sub = subset(fields, scope, crop)
+            if method not in args.methods:
+                continue
+            crops = sorted(subset(fields, scope, "all", method)["crop"].unique())
+            for crop in (crops + ["all"] if args.crops is None else args.crops):
+                sub = subset(fields, scope, crop, method)
                 role, info = fn(sub) if method == "loyo" else fn(sub, n_trials=args.trials)
                 check(sub.assign(role=role), role, method)
                 group = f"{scope}/{method}/{crop}"
@@ -81,7 +88,11 @@ def main() -> None:
                       f"{summary[-1]['train/val/test']}  score {info['score']:.3f}", flush=True)
 
     (paths["work_dir"] / "logs").mkdir(exist_ok=True)
-    pd.DataFrame(summary).to_csv(paths["work_dir"] / "logs" / "06_split_suite_summary.csv", index=False)
+    log = paths["work_dir"] / "logs" / "06_split_suite_summary.csv"
+    if partial and log.exists():
+        old = pd.read_csv(log)
+        summary = old[~old["split"].isin([r["split"] for r in summary])].to_dict("records") + summary
+    pd.DataFrame(summary).to_csv(log, index=False)
     print(f"wrote {store}; run scripts/07_split_report.py for docs/splits.md")
 
 

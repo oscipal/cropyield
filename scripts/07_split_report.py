@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.config import load_paths  # noqa: E402
 from src.splitting import ROLES, SCOPES, SIZE_WEIGHT, TARGET, subset  # noqa: E402
 
-ABBR = {"Germany": "DE", "Argentina": "AR", "Brazil": "BR", "Uruguay": "UY"}
+ABBR = {"Germany": "DE", "Argentina": "AR", "Brazil": "BR", "Uruguay": "UY", "Switzerland": "CH"}
 METHOD_NAMES = {"loyo": "leave one year out", "loro": "leave regions out"}
 
 
@@ -74,12 +74,13 @@ def main() -> None:
 
     overview, sections = [], []
     for scope, countries in SCOPES.items():
-        crops = sorted(subset(fields, scope, "all")["crop"].unique()) + ["all"]
         title = scope.replace("_", " ").title()
         sections += [f"## {title}" + ("" if countries == [title] else f" ({', '.join(countries)})"), ""]
         for method in METHOD_NAMES:
-            for crop in crops:
+            for crop in sorted(subset(fields, scope, "all", method)["crop"].unique()) + ["all"]:
                 group = f"{scope}/{method}/{crop}"
+                if not (store / scope / method / crop).exists():
+                    continue  # the suite may be partial (e.g. europe has only loro/all)
                 ds = xr.open_zarr(store, group=group, consolidated=False).load()
                 stored = pd.DataFrame({"field": [str(f) for f in ds["field"].values],
                                        "split": ds["split"].values})
@@ -117,7 +118,7 @@ def main() -> None:
         "",
         "## How the splits are built",
         "",
-        "- **Scopes:** `germany` (DE), `south_america` (AR, BR, UY), `world` (all four).",
+        "- **Scopes:** `germany` (DE), `europe` (DE, CH), `south_america` (AR, BR, UY), `world` (AR, BR, DE, UY). `europe` only has `loro/all` so far.",
         "- **Crops:** one split per crop in the scope, plus `all` (crops pooled).",
         "- **Methods:** `loyo` holds out one year as test and another year as val; train is all other years. "
         "`loro` holds out sets of whole regions as test and val (target "

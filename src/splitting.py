@@ -22,16 +22,23 @@ import pandas as pd
 
 ROLES = {"train": 0, "val": 1, "test": 2}
 SCOPES = {
-    "germany": ["Germany"],
+    "germany": ["Germany"],  # legacy: the original suite without Switzerland
+    "europe": ["Germany", "Switzerland"],
     "south_america": ["Argentina", "Brazil", "Uruguay"],
-    "world": ["Germany", "Argentina", "Brazil", "Uruguay"],
+    "world": ["Germany", "Switzerland", "Argentina", "Brazil", "Uruguay"],
 }
+MIN_REGIONS = 3  # loro needs a train, a val and a test region; crops with fewer regions cannot be split
 TARGET = 0.15
 SIZE_WEIGHT = 2.0
 
 
-def subset(fields: pd.DataFrame, scope: str, crop: str) -> pd.DataFrame:
+def subset(fields: pd.DataFrame, scope: str, crop: str, method: str | None = None) -> pd.DataFrame:
+    """Field-years of a scope and crop. For loro, crops present in fewer than MIN_REGIONS regions of the scope
+    (Swiss barley/triticale, which exist on one farm only) are left out: they cannot be split by region."""
     sub = fields[fields["country"].isin(SCOPES[scope])]
+    if method == "loro":
+        n_regions = sub.groupby("crop")["region"].nunique()
+        sub = sub[sub["crop"].isin(n_regions[n_regions >= MIN_REGIONS].index)]
     if crop != "all":
         sub = sub[sub["crop"] == crop]
     return sub.reset_index(drop=True)
