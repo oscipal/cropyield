@@ -2,6 +2,8 @@
 data:
   preprocessed: /scratch2/oscipal/yieldsat/preprocessed
   raw: /scratch2/oscipal/yieldsat/raw
+  # SwissYield in YieldSAT format. Never inspect these files by hand (see CLAUDE.md); analysis goes through scripts/swissyield.
+  swissyield: /scratch2/oscipal/swissyield
 
 # Derived files (.npy, parquet, predictions). Must not be inside the data folders.
 work_dir: /scratch2/oscipal/yieldsat_work

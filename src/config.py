@@ -25,3 +25,14 @@ def load_paths(path: str | Path = PATHS_FILE) -> dict:
         if out["work_dir"].resolve().is_relative_to(out[key].resolve()):
             raise ValueError(f"work_dir must not be inside the data folder {out[key]}")
     return out
+
+
+NC_NAME = "merge_s2-soil-dem-weather-coords.nc"
+
+
+def country_dirs(paths: dict, country: str) -> tuple[Path, Path]:
+    """(preprocessed NetCDF, raw field folder) of a country; Switzerland lives in its own data root."""
+    if country == "Switzerland":
+        root = paths["swissyield"]
+        return root / "Preprocessed" / country / NC_NAME, root / "Raw" / country
+    return paths["preprocessed"] / country / NC_NAME, paths["raw"] / country
