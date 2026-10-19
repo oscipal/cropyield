@@ -23,14 +23,13 @@ import rasterio
 from rasterio.warp import transform
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.config import load_paths  # noqa: E402
+from src.config import country_dirs, load_paths  # noqa: E402
 from src.data import load_meta, open_dataset  # noqa: E402
 
-COUNTRIES = ["Germany", "Argentina", "Brazil", "Uruguay"]
-NC_NAME = "merge_s2-soil-dem-weather-coords.nc"
+COUNTRIES = ["Germany", "Argentina", "Brazil", "Uruguay", "Switzerland"]
 # common metric CRS per country for comparing footprints (fields span two UTM zones in DE and AR)
 COUNTRY_CRS = {"Germany": "EPSG:32632", "Argentina": "EPSG:32720", "Brazil": "EPSG:32722",
-               "Uruguay": "EPSG:32721"}
+               "Uruguay": "EPSG:32721", "Switzerland": "EPSG:32632"}
 IOU_MIN = 0.5
 CELL_M = 20.0
 MERGE_KM = 10.0  # farms with fields closer than this form one region (fields of different countries are >140 km apart)
@@ -154,7 +153,8 @@ def regions(fields: pd.DataFrame, cells: list[set | None]) -> np.ndarray:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--countries", nargs="*", default=COUNTRIES)
+    ap.add_argument("--countries", nargs="*", default=COUNTRIES,
+                    help="rebuild only these countries; the rows of the others are kept from the existing table")
     args = ap.parse_args()
     paths = load_paths()
 
@@ -162,11 +162,12 @@ def main() -> None:
     for country in args.countries:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            meta = load_meta(open_dataset(paths["preprocessed"] / country / NC_NAME))
+            nc_path, raw_dir = country_dirs(paths, country)
+            meta = load_meta(open_dataset(nc_path))
         meta = meta[meta["target"].notna()]
         meta["field"] = meta["field"].astype(str)
         fields = field_table(meta, country)
-        cells = footprints(paths["raw"] / country, meta, fields["field"].to_numpy(), COUNTRY_CRS[country])
+        cells = footprints(raw_dir, meta, fields["field"].to_numpy(), COUNTRY_CRS[country])
         del meta
         missing = sum(c is None for c in cells)
         if missing:
@@ -179,9 +180,13 @@ def main() -> None:
               f"({n_merged} merged); crops {fields['crop'].value_counts().to_dict()}", flush=True)
         tables.append(fields)
 
-    out = pd.concat(tables, ignore_index=True)
-    assert out["field"].is_unique
     path = paths["work_dir"] / "fields.parquet"
+    if path.exists() and set(args.countries) != set(COUNTRIES):
+        tables = [pd.read_parquet(path).query("country not in @args.countries")] + tables
+    out = pd.concat(tables, ignore_index=True)
+    out = out.assign(_c=out["country"].map(COUNTRIES.index)).sort_values("_c", kind="stable").drop(columns="_c")
+    out = out.reset_index(drop=True)
+    assert out["field"].is_unique
     path.parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(path, index=False)
     print(f"wrote {path} ({len(out)} field-years)")

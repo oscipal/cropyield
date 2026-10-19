@@ -22,11 +22,10 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from src.config import load_paths  # noqa: E402
+from src.config import country_dirs, load_paths  # noqa: E402
 from src.data import iter_blocks, load_meta, open_dataset  # noqa: E402
 
-COUNTRIES = ["Germany", "Argentina", "Brazil", "Uruguay"]
-NC_NAME = "merge_s2-soil-dem-weather-coords.nc"
+COUNTRIES = ["Germany", "Argentina", "Brazil", "Uruguay", "Switzerland"]  # new countries go last: earlier rows keep their index
 DYNAMIC = ["B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B09", "B11", "B12",
            "temp_mean", "temp_max", "temp_min", "total_prec"]
 META_COLS = ["field", "farm", "crop", "year", "row", "col", "target"]
@@ -35,15 +34,16 @@ META_COLS = ["field", "farm", "crop", "year", "row", "col", "target"]
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--block", type=int, default=100_000)
+    ap.add_argument("--out-name", default="data", help="folder under <work_dir>/lstm (write elsewhere to compare first)")
     args = ap.parse_args()
 
     paths = load_paths()
-    out_dir = paths["work_dir"] / "lstm" / "data"
+    out_dir = paths["work_dir"] / "lstm" / args.out_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     datasets, metas, masks = {}, {}, {}
     for c in COUNTRIES:
-        ds = open_dataset(paths["preprocessed"] / c / NC_NAME)
+        ds = open_dataset(country_dirs(paths, c)[0])
         meta = load_meta(ds)
         masks[c] = meta["target"].notna().to_numpy()
         datasets[c], metas[c] = ds, meta
