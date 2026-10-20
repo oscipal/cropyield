@@ -27,6 +27,7 @@ import torch  # noqa: E402
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1]))
 sys.path.insert(0, str(HERE))
+from convlstm import ConvLSTMModel  # noqa: E402
 from lstm_v2 import (FeatureSpec, LSTMv2, PatchLSTM, TargetScaler, augment_batch,  # noqa: E402
                      field_balanced_mse, gather_patches, sample_per_field)
 from src.config import REPO_ROOT, load_paths, load_yaml  # noqa: E402
@@ -75,6 +76,9 @@ def build_model(cfg: dict, n_dyn: int, n_static: int) -> torch.nn.Module:
     if mc.get("type", "lstm") == "patch":
         return PatchLSTM(n_dyn, n_static, mc["patch_size"], mc["conv_channels"], mc["hidden_size"],
                          mc["num_layers"], mc["head_size"], mc.get("dropout", 0.0))
+    if mc.get("type", "lstm") == "convlstm":
+        return ConvLSTMModel(n_dyn, n_static, mc["patch_size"], mc["hidden_channels"], mc["num_layers"],
+                             mc["kernel_size"], mc["head_size"], mc.get("dropout", 0.0))
     return LSTMv2(n_dyn + n_static, mc["hidden_size"], mc["num_layers"], mc["head_size"], mc.get("dropout", 0.0))
 
 
@@ -233,7 +237,7 @@ def run_split(split_name, cfg, data, out_dir, device, use_wandb):
     tc = cfg["train"]
     prep = prepare_split(split_name, cfg, data)
     idx, X, scal = prep["idx"], prep["X"], prep["scal"]
-    if cfg["model"].get("type", "lstm") == "patch":
+    if cfg["model"].get("type", "lstm") in ("patch", "convlstm"):
         nbr_all = np.load(info["data_dir"] / f"nbr_k{cfg['model']['patch_size']}.npy", mmap_mode="r")
         X = {r: (*X[r], local_neighbours(nbr_all, idx[r], len(meta))) for r in X}
     else:
