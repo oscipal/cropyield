@@ -30,6 +30,7 @@ MODELS = {  # run name -> column label
     "lstm_v2_s2": "LSTM v2",
     "lstm_patch_s2": "Patch LSTM",
     "lstm_patch_v3_s2": "Patch LSTM v3",
+    "convlstm_s2": "ConvLSTM",
 }
 DESCRIPTIONS = [
     ("Mean", "`mean`", "Baseline: every test pixel gets the mean yield of the training pixels."),
@@ -46,13 +47,17 @@ DESCRIPTIONS = [
      "CNN per time step, then the LSTM. 5-model ensemble."),
     ("Patch LSTM v3", "`lstm_patch_v3_s2`", "Patch LSTM + training augmentation against season shifts: the "
      "time series randomly shifted by ±1 step, observed steps dropped with p = 0.1. 5-model ensemble."),
+    ("ConvLSTM", "`convlstm_s2`", "Convolutional LSTM on the 5 × 5 neighbourhood: the LSTM gates are 3 × 3 "
+     "convolutions, so space and time are mixed in one layer; inputs, training and augmentation as Patch LSTM v3. "
+     "Trained on the pooled all-crop splits only. 5-model ensemble."),
 ]
+POOLED = ("europe", "south_america", "world")  # scopes of the pooled all-crop splits (ConvLSTM comparison)
 DROPPED = ("Tried and not kept: a field-image model (temporal encoder + U-Net over the whole field; not better "
            "than the patch LSTM on 4 splits), and adding weather, soil + topography or spectral noise to the "
            "patch LSTM (no gain on val in a 2-member screening). Time augmentation was the only change that "
            "helped on val (median subset field R² 0.33 vs 0.08), so it became Patch LSTM v3.")
 METHODS = {"loyo": "LOYO (leave one year out)", "loro": "LORO (leave one region out)"}
-SCOPES = {"germany": "Germany", "south_america": "South America", "world": "World"}
+SCOPES = {"germany": "Germany", "europe": "Europe", "south_america": "South America", "world": "World"}
 DUPLICATES = {("world", "corn"), ("world", "rapeseed"), ("world", "soybean")}
 
 
@@ -116,7 +121,8 @@ def main() -> None:
         L.append(f"| {label} | " + " | ".join(report.fmt(v) for v in med)
                  + f" | {report.fmt(d['field_r2'].median())} | {int((best == m).sum())} / {len(best)} |")
     pk = single.drop_duplicates(["method", "subset"])
-    pv = [paper[k]["field"][s]["r2"][0] for k, s in zip(pk["method"], pk["subset"])]
+    pv = [paper.get(k, {}).get("field", {}).get(s, {"r2": [float("nan")]})["r2"][0]
+          for k, s in zip(pk["method"], pk["subset"])]
     pk = pk.assign(paper=pv)
     L.append("| *paper LSTM (S2)* | " + " | ".join(report.fmt(pk.loc[pk["method"] == k, "paper"].median())
                                                    for k in METHODS)
@@ -147,6 +153,17 @@ def main() -> None:
             "test fields": lambda key, n=n: str(int(n[key[0]])),
             "paper LSTM": lambda key, k=k: report.paper_cell({"s2": paper}, "s2", k, "field", key[0])[0]})
         L.append("")
+
+        L += ["### Per country × crop from the pooled splits", "",
+              "Subsets of the all-crop splits of Europe (Germany + Switzerland), South America and World (one "
+              "model per split, crop and country as inputs); the only table with ConvLSTM values. Swiss subsets "
+              "have very few test fields; no paper values exist for them.", ""]
+        d = sub[(sub["method"] == k) & sub["crop"].eq("all") & sub["scope"].isin(POOLED)].assign(
+            region=lambda x: x["scope"].map(SCOPES))
+        d = d.assign(_o=d["scope"].map({s: i for i, s in enumerate(POOLED)})).sort_values(["_o", "subset"])
+        rows = d.drop_duplicates(["region", "subset"])[["region", "subset"]].apply(tuple, axis=1).tolist()
+        n = d.drop_duplicates(["region", "subset"]).set_index(["region", "subset"])["n_fields"]
+        L += table(d, ["region", "subset"], {"test fields": lambda key, n=n: str(int(n[key]))}, rows) + [""]
 
     L += ["## Notes", "",
           "- Patch LSTM v3 has the best median subset R² overall (0.31), mainly from LORO; under LOYO it is level "
