@@ -61,7 +61,11 @@ class FeatureSpec:
                 if n in s2 or n in self.indices]
 
     def build_dyn(self, raw: np.ndarray) -> np.ndarray:
-        """raw (n, T, 16) -> (n, T, F) float32; NaN where missing, except the mask channel."""
+        """raw (n, T, 16) -> (n, T, F) float32; NaN where missing, except the mask channel.
+        uint16 input (dense S2 cubes of 11_build_s2_grid.py) marks missing values with 65535."""
+        raw = np.asarray(raw)
+        if raw.dtype == np.uint16:
+            raw = np.where(raw == np.iinfo(np.uint16).max, np.float32(np.nan), raw.astype(np.float32))
         raw = np.asarray(raw, dtype=np.float32)
         parts = [raw[..., self.dyn_cols]]
         with np.errstate(divide="ignore", invalid="ignore"):

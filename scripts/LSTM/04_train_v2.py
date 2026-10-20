@@ -289,7 +289,7 @@ def main(run_split=run_split, default_config: str = "lstm_v2_s2.yaml") -> None:
     if args.run_name:
         cfg["name"] = args.run_name
     paths = load_paths()
-    data_dir = paths["work_dir"] / "lstm" / "data"
+    data_dir = paths["work_dir"] / "lstm" / cfg.get("data_dir", "data")
     run_root = paths["work_dir"] / "lstm" / "runs" / cfg["name"]
     torch.backends.cudnn.benchmark = True
 
