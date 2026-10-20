@@ -13,9 +13,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1]))
 from src.config import REPO_ROOT, load_paths, load_yaml  # noqa: E402
 
-ABBR = {"Argentina": "ARG", "Brazil": "BRA", "Germany": "GER", "Uruguay": "URG",
-        "corn": "C", "rapeseed": "R", "soybean": "S", "wheat": "W"}
-SCOPE_ORDER = {"germany": 0, "south_america": 1, "world": 2}
+ABBR = {"Argentina": "ARG", "Brazil": "BRA", "Germany": "GER", "Uruguay": "URG", "Switzerland": "SUI",
+        "corn": "C", "rapeseed": "R", "soybean": "S", "wheat": "W", "winter_cereal": "WC"}
+SCOPE_ORDER = {"germany": 0, "europe": 1, "south_america": 2, "world": 3}
 SINGLE = " (single)"
 
 
@@ -53,8 +53,11 @@ def summary(gr: pd.DataFrame, cfgs: list[dict], paper: dict, inp_key: dict) -> l
     keys = ["split", "subset"]
     b = g[g["config"] == base].set_index(keys)
 
-    def paper_val(row, inp, level):
-        return paper[inp][row["method"]][level][row["subset"]]["r2"][0]
+    def paper_val(row, inp, level, metric="r2"):  # NaN for subsets the paper does not have (Switzerland)
+        try:
+            return paper[inp][row["method"]][level][row["subset"]][metric][0]
+        except KeyError:
+            return float("nan")
 
     rows = []
     for v in variants:
@@ -70,7 +73,7 @@ def summary(gr: pd.DataFrame, cfgs: list[dict], paper: dict, inp_key: dict) -> l
                "mean field RMSE": fmt(d["field_rmse"].mean())}
         row[f"field R² > `{base}`"] = "–" if v == base else \
             f"{int((d['field_r2'] > b['field_r2'].reindex(d.index)).sum())} / {len(d)}"
-        row["field R² ≥ paper"] = f"{int((d['field_r2'] >= d['paper_r2']).sum())} / {len(d)}"
+        row["field R² ≥ paper"] = f"{int((d['field_r2'] >= d['paper_r2']).sum())} / {int(d['paper_r2'].notna().sum())}"
         rows.append(row)
     p = g[g["config"] == base].reset_index(drop=True)
     pr = [paper_val(r, "s2", "field") for _, r in p.iterrows()]
@@ -78,9 +81,9 @@ def summary(gr: pd.DataFrame, cfgs: list[dict], paper: dict, inp_key: dict) -> l
                  "median field R²": fmt(pd.Series(pr).median()),
                  "median field R² (all-crop splits)": fmt(pd.Series(pr)[p["crop"].eq("all")].median()),
                  "median field R² (single-crop splits)": fmt(pd.Series(pr)[p["crop"].ne("all")].median()),
-                 "median pixel R²": fmt(pd.Series([paper["s2"][r["method"]]["pixel"][r["subset"]]["r2"][0]
+                 "median pixel R²": fmt(pd.Series([paper_val(r, "s2", "pixel")
                                                    for _, r in p.iterrows()]).median()),
-                 "mean field RMSE": fmt(pd.Series([paper["s2"][r["method"]]["field"][r["subset"]]["rmse"][0]
+                 "mean field RMSE": fmt(pd.Series([paper_val(r, "s2", "field", "rmse")
                                                    for _, r in p.iterrows()]).mean()),
                  f"field R² > `{base}`": "–", "field R² ≥ paper": "–"})
     L = ["## Summary", "",
