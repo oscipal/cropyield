@@ -53,12 +53,15 @@ scripts/
     07_train_field_image.py  field-image model, one ensemble per split (inputs and outputs as 04)
     field_image.py        field images from the pixel memmaps, crops, tiles, encoder + U-Net
     check_field_image.py  data alignment and shape checks (--gpu: memory of a training step)
+    12_scene_availability.py  per field x window: scenes, valid share, cause of gaps -> docs/scene_availability.md
+    13_build_weather_grid.py  ERA5 weather per field on the S2 time grids (degC, mm, GDD, ...) -> lstm/<grid>/weather.npy
     paper_lstm_results.yaml   the paper's LSTM results (appendix Tab. 13–18)
 src/
   config.py               loads configs/paths.yaml
   data.py                 opening the NetCDF files, decoded pixel metadata
   metrics.py              field- and pixel-level R² and RMSE
   splits.py               load_split()
+  season.py               sowing / harvest dates of a field-year on the cube's day axis
   splitting.py            split construction and scoring (used by 06/07)
 viz/                      browser visualizer (Streamlit): fields + inputs, runs, predictions, splits
   run.sh                  starts it on 127.0.0.1:8501 (builds viz/build_index.py outputs on first start)
