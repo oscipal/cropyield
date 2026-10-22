@@ -24,6 +24,8 @@ METRICS = ["field_r2", "field_rmse", "pixel_r2", "pixel_rmse"]
 fam = st.segmented_control("Model", list(families), default="Patch LSTM" if "Patch LSTM" in families
                            else list(families)[0], key="runs_family") or list(families)[0]
 configs = families[fam]
+if note := data.FAMILY_NOTES.get(fam):
+    st.caption(note)
 c1, c2, c3 = st.columns([2, 1, 1])
 cfg = c1.selectbox("Variant", configs, key=f"runs_cfg_{fam}",
                    format_func=lambda c: c + ("  · screen" if data.config_info(c)["screen"] else "")) \

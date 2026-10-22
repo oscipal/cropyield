@@ -358,6 +358,60 @@ MODEL_FAMILIES = {
 }
 
 
+# what was done per family, in a few sentences (shown above the variant menu)
+FAMILY_NOTES = {
+    "Baselines": "Reference points without a model: every pixel gets a training mean yield. A model has to beat "
+                 "these to be worth anything.",
+    "LSTM v1 (paper)": "Re-implementation of the YieldSAT paper's pixel LSTM, to check that we reproduce its numbers "
+                       "on our splits: Sentinel-2 only, and with the paper's ADM fusion (weather, soil, terrain).",
+    "LSTM v2": "The paper LSTM with a set of training and input improvements (vegetation indices, observed-step "
+               "channel, crop / country one-hot, per crop × country target scaling, pixel subsampling, "
+               "regularisation, 5-model ensemble). Each addition can be switched off.",
+    "Patch LSTM": "LSTM v2 with spatial context: each pixel is seen with its 5 × 5 neighbourhood (small CNN per time "
+                  "step, then the LSTM). A 2-member val screening tried extra inputs and augmentations; only the "
+                  "time augmentation helped, which became Patch LSTM v3, the main model.",
+    "ConvLSTM": "Replaces the CNN + LSTM by one ConvLSTM whose gates are 3 × 3 convolutions, mixing space and time. "
+                "A 2-member val screening (docs/convlstm_screening.md) compared model sizes and time grids; the "
+                "10-day Sentinel-2 grid with a 30-day time shift was chosen for the final 5-member run, on the "
+                "pooled all-crop splits only.",
+    "Field image": "Predicts the whole yield map of a field in one pass (temporal encoder per pixel, then a 2D U-Net "
+                   "over the field). Screened on 4 splits; not better than the patch LSTM, so not pursued.",
+}
+
+# one line per variant: what it is or what it changes against its reference
+VARIANT_NOTES = {
+    "mean": "Every pixel gets the mean yield of the training pixels.",
+    "mean_crop_country": "Every pixel gets the training mean of its crop × country.",
+    "lstm_s2": "Paper pixel LSTM: 12 Sentinel-2 bands × 24 monthly steps, 2 LSTM layers, one model.",
+    "lstm_s2_adm": "Paper LSTM + weather, soil and terrain repeated at every time step (ADM input fusion).",
+    "lstm_v2_s2": "Paper LSTM + indices, observed-step channel, crop / country, target scaling, ensemble of 5.",
+    "lstm_patch_s2": "LSTM v2 + 5 × 5 neighbourhood per pixel (CNN per time step, then LSTM). Ensemble of 5.",
+    "lstm_patch_v3_s2": "Main model. Patch LSTM + time augmentation: series shifted by ±1 step, steps dropped "
+                        "with p = 0.1. Ensemble of 5.",
+    "lstm_patch_v3_w10_s2": "Patch LSTM v3 on the 10-day grid (±3 steps shift): control for the ConvLSTM, separates "
+                            "the gain from the finer time grid from the gain from the model.",
+    "patch_aug_spec": "Screen: Patch LSTM + spectral noise (0.1). No gain on val.",
+    "patch_aug_time": "Screen: Patch LSTM + time shift ±1 step and step dropout 0.1. Helped on val → Patch LSTM v3.",
+    "patch_soil_dem": "Screen: Patch LSTM + soil and terrain inputs. No gain on val.",
+    "patch_weather": "Screen: Patch LSTM + weather inputs. No gain on val.",
+    "convlstm_s2": "Final ConvLSTM: 10-day Sentinel-2 grid, time shift ±3 steps (30 days), ensemble of 5, pooled "
+                   "all-crop splits.",
+    "convlstm_base": "Screen: reference ConvLSTM on the original 30-day grid.",
+    "convlstm_h64": "Screen: wider ConvLSTM (64 hidden channels). Worst of the model variants.",
+    "convlstm_k9": "Screen: 9 × 9 neighbourhood. About as good as base, 2.6× slower, less stable.",
+    "convlstm_l2": "Screen: two ConvLSTM layers. Similar to base.",
+    "convlstm_w10": "Screen: 10-day grid, shift ±3 steps (30 days). Chosen for the final run.",
+    "convlstm_w10_s1": "Screen: 10-day grid, shift ±1 step (10 days).",
+    "convlstm_w15": "Screen: 15-day grid, shift ±2 steps (30 days).",
+    "convlstm_w30": "Screen: 30-day grid rebuilt from the raw scenes; control, should match base.",
+    "field_image_s2_screen": "Screen: reference field-image model (temporal encoder + U-Net), single model.",
+    "field_image_s2_crop256": "Screen: field-image model trained on 256 px crops, batch 4.",
+    "field_image_s2_fmean": "Screen: field-image model + a field-mean loss term.",
+    "field_image_s2_small": "Screen: smaller U-Net (3 levels), dropout 0.3.",
+    "field_image_s2_tf": "Screen: transformer instead of the LSTM as temporal encoder.",
+}
+
+
 @st.cache_data(ttl=120)
 def model_families() -> dict[str, list[str]]:
     """MODEL_FAMILIES restricted to configs that have a run folder, plus "Other" for unlisted ones."""
@@ -381,7 +435,7 @@ def config_info(config: str) -> dict:
     text = path.read_text() if path else ""
     header = " ".join(l.lstrip("# ").strip() for l in text.splitlines()[:6] if l.startswith("#"))
     return {"path": str(path.relative_to(REPO_ROOT)) if path else None, "yaml": text, "header": header,
-            "desc": _summary_descriptions().get(config, ""),
+            "desc": VARIANT_NOTES.get(config) or _summary_descriptions().get(config, ""),
             "screen": bool(path) and path.parent.name.endswith("_screen")}
 
 

@@ -31,6 +31,7 @@ with st.sidebar:
     fam = st.selectbox("Model", fams, key="pred_family")
     cfgs = [c for c in families[fam] if c in set(runs["config"])]
     cfg = st.selectbox("Variant", cfgs, key=f"pred_cfg_{fam}")
+    st.caption(data.config_info(cfg)["desc"] or data.config_info(cfg)["header"])
     r = runs[runs["config"] == cfg]
     splits = sorted(r["split"])
     if st.session_state.get("pred_split") not in splits:
