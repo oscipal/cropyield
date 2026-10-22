@@ -19,7 +19,7 @@ from shapely.geometry import shape
 from shapely.ops import unary_union
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.config import load_paths  # noqa: E402
+from src.config import country_dirs, load_paths  # noqa: E402
 
 MASK = "mean_scaled_yield_masked_regional_statistical_outlier.tif"
 
@@ -34,11 +34,11 @@ def footprint(tif: Path):
 
 def main() -> None:
     paths = load_paths()
-    raw, work = paths["raw"], paths["work_dir"]
+    work = paths["work_dir"]
     fields = pd.read_parquet(work / "fields.parquet")
     geoms = []
     for name, country in zip(fields["field"], fields["country"]):
-        tif = raw / country / name / "yield_masks" / MASK
+        tif = country_dirs(paths, country)[1] / name / "yield_masks" / MASK   # Switzerland: own data root
         try:
             geoms.append(footprint(tif))
         except Exception as e:  # noqa: BLE001

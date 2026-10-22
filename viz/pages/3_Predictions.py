@@ -95,7 +95,7 @@ if len(split_shapes):
         col, colors, cmap, vr, cap, legend = "target", None, "viridis", None, "field mean yield (t/ha)", \
             {"train": "#9e9e9e"}
     missing = len(members[members["set"].isin(eval_sets)]) - len(split_shapes[split_shapes["set"].isin(eval_sets)])
-    st.caption(plots.legend(legend) + (f" · {missing} val/test field-years without outline (e.g. Switzerland)"
+    st.caption(plots.legend(legend) + (f" · {missing} val/test field-years without outline"
                                        if missing else ""), unsafe_allow_html=True)
     clicked = panels.persistent_map(
         lambda: plots.field_map(shown, col, colors=colors, cmap=cmap or "viridis",

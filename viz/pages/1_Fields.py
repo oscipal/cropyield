@@ -59,7 +59,7 @@ legend = {k: v for k, v in plots.CROP_COLORS.items() if k in set(shapes_cc["crop
 
 if len(shapes_cc):
     st.caption(plots.legend(legend) + f" · {len(sub):,} field-years"
-               + (f" · {n_missing} without outline (e.g. Switzerland), pick them below" if n_missing else ""),
+               + (f" · {n_missing} without outline, pick them below" if n_missing else ""),
                unsafe_allow_html=True)
     clicked = panels.persistent_map(
         lambda: plots.field_map(shapes, "crop", colors=plots.CROP_COLORS, selected=st.session_state["field"],
