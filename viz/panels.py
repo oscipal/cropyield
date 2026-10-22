@@ -32,16 +32,12 @@ def year_chooser(years: list, key: str, allow_all: bool = True, label: str = "Ye
 
 
 def persistent_map(build, key: str, reset_token, height: int = 480) -> str | None:
-    """Show the folium map from build(view) and keep the user's pan / zoom across reruns until reset_token changes.
-    Returns the field of a newly clicked polygon (None otherwise)."""
-    vkey, tkey = f"{key}_view", f"{key}_token"
-    if st.session_state.get(tkey) != reset_token:
-        st.session_state[tkey] = reset_token
-        st.session_state.pop(vkey, None)
-    out = st_folium(build(st.session_state.get(vkey)), height=height, use_container_width=True, key=key,
-                    returned_objects=["last_active_drawing", "center", "zoom"]) or {}
-    if out.get("center") and out.get("zoom"):
-        st.session_state[vkey] = {"center": [out["center"]["lat"], out["center"]["lng"]], "zoom": out["zoom"]}
+    """Show the folium map from build() -> (base map, polygon layer). Pan / zoom stay on the client: the view is not
+    sent back (no rerun while navigating), and the polygons are swapped in place, so the view is kept across reruns
+    until reset_token changes (it is part of the key). Returns the field of a newly clicked polygon (None otherwise)."""
+    m, fg = build()
+    out = st_folium(m, feature_group_to_add=fg, height=height, use_container_width=True,
+                    key=f"{key}_{abs(hash(reset_token))}", returned_objects=["last_active_drawing"]) or {}
     clicked = ((out.get("last_active_drawing") or {}).get("properties") or {}).get("field")
     if clicked and clicked != st.session_state.get(f"{key}_click"):
         st.session_state[f"{key}_click"] = clicked

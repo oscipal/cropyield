@@ -15,7 +15,6 @@ from timeline import timeline
 st.set_page_config(page_title="Fields", page_icon="🗺️", layout="wide")
 st.title("Fields")
 
-DEFAULT_SPLIT = ("world", "loro", "all")
 fields = data.fields_table()
 by_field = fields.set_index("field")
 
@@ -30,19 +29,6 @@ with st.sidebar:
     st.header("Filter")
     countries = st.multiselect("Country", sorted(fields["country"].unique()), key="fields_country")
     crops = st.multiselect("Crop type", sorted(fields["crop"].unique()), key="fields_crop")
-    st.header("Map colour")
-    color_by = st.radio("Colour by", ["split", "crop type", "yield"], horizontal=True, key="fields_color")
-    if color_by == "split":
-        groups = data.split_groups()
-        scopes = sorted(groups["scope"].unique())
-        scope = st.selectbox("Scope", scopes, index=scopes.index(DEFAULT_SPLIT[0]), key="fields_scope")
-        methods = sorted(groups[groups["scope"] == scope]["method"].unique())
-        method = st.selectbox("Method", methods, index=methods.index(DEFAULT_SPLIT[1])
-                              if DEFAULT_SPLIT[1] in methods else 0, key="fields_method")
-        scrops = sorted(groups[(groups["scope"] == scope) & (groups["method"] == method)]["crop"])
-        scrop = st.selectbox("Split crop", scrops, index=scrops.index("all") if "all" in scrops else 0,
-                             key="fields_scrop")
-        split_name = f"{scope}/{method}/{scrop}"
 
 sub_cc = fields
 if countries:
@@ -69,28 +55,15 @@ shapes_all = data.field_shapes()
 shapes_cc = shapes_all[shapes_all["field"].isin(sub_cc["field"])]
 shapes = shapes_cc[shapes_cc["field"].isin(sub["field"])].copy()
 n_missing = len(sub) - len(shapes)
-
-if color_by == "split":
-    member = data.split_membership()
-    member = member[member["split"] == split_name].set_index("field")["set"]
-    shapes["set"] = shapes["field"].map(member).fillna("not in split")
-    col, colors, legend = "set", plots.SET_COLORS_MAP, plots.SET_COLORS_MAP
-elif color_by == "crop type":
-    col, colors = "crop", plots.CROP_COLORS
-    legend = {k: v for k, v in colors.items() if k in set(shapes_cc["crop"])}
-else:
-    col, colors, legend = "yield_mean", None, None
-tooltip = ("field", "crop", "year", "yield_mean") + (("set",) if color_by == "split" else ())
+legend = {k: v for k, v in plots.CROP_COLORS.items() if k in set(shapes_cc["crop"])}
 
 if len(shapes_cc):
-    st.caption((plots.legend(legend) + " · " if legend else "")
-               + f"{len(sub):,} field-years" + (f" · {n_missing} without outline (e.g. Switzerland), pick them "
-                                                f"below" if n_missing else ""), unsafe_allow_html=True)
-    vrange = tuple(np.nanpercentile(shapes_cc["yield_mean"], [2, 98])) if col == "yield_mean" else None
+    st.caption(plots.legend(legend) + f" · {len(sub):,} field-years"
+               + (f" · {n_missing} without outline (e.g. Switzerland), pick them below" if n_missing else ""),
+               unsafe_allow_html=True)
     clicked = panels.persistent_map(
-        lambda view: plots.field_map(shapes, col, colors=colors, selected=st.session_state["field"], tooltip=tooltip,
-                                     bounds=shapes_cc.total_bounds, view=view, vrange=vrange,
-                                     caption="field mean yield (t/ha)"),
+        lambda: plots.field_map(shapes, "crop", colors=plots.CROP_COLORS, selected=st.session_state["field"],
+                                bounds=shapes_cc.total_bounds),
         key="fields_map", reset_token=(tuple(countries), tuple(crops)))
     if clicked and clicked in set(sub["field"]):
         st.session_state["field"] = clicked
@@ -101,11 +74,9 @@ field = st.selectbox("Field-year", options, index=options.index(st.session_state
 st.session_state["field"] = field
 row = by_field.loc[field]
 dates = data.field_dates().loc[field]
-cols = st.columns(7)
+cols = st.columns(6)
 for c, k in zip(cols, ["country", "crop", "year", "farm", "region", "n_pixels"]):
     c.metric(k, f"{row[k]:,}" if isinstance(row[k], (int, np.integer)) else str(row[k]))
-if color_by == "split":
-    cols[6].metric(f"set in {split_name}", member.get(field, "not in split"))
 st.caption(f"Mean yield {row['yield_mean']:.2f} t/ha · sown {dates['seeding_date']:%d %b %Y} "
            f"({dates['seeding_date_type']}) · harvested {dates['harvesting_date']:%d %b %Y} · physical field "
            f"`{row['physical_field']}`")

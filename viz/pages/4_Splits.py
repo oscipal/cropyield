@@ -31,8 +31,9 @@ if len(shapes):
     st.caption(" · ".join(f"<span style='color:{v}'>■</span> {k}" for k, v in plots.SET_COLORS.items())
                + (f" · {len(t) - len(shapes)} field-years without a polygon" if len(t) > len(shapes) else ""),
                unsafe_allow_html=True)
-    m = plots.field_map(shapes, "set", colors=plots.SET_COLORS, tooltip=("field", "set", "crop", "year", "region"))
-    st_folium(m, height=520, use_container_width=True, returned_objects=[], key=f"splitmap_{scope}_{method}_{crop}")
+    m, fg = plots.field_map(shapes, "set", colors=plots.SET_COLORS, tooltip=("field", "set", "crop", "year", "region"))
+    st_folium(m, feature_group_to_add=fg, height=520, use_container_width=True, returned_objects=[],
+              key=f"splitmap_{scope}_{method}_{crop}")
 
 c1, c2 = st.columns(2)
 with c1:
