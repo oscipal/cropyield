@@ -52,9 +52,14 @@ def prediction_panel(path: str, role: str, field: str) -> None:
     if fp.empty:
         st.info("No prediction for this field in this run and set.")
         return
-    r0, c0 = int(fp["row"].min()), int(fp["col"].min())
-    lr, lc = fp["row"].to_numpy(int) - r0, fp["col"].to_numpy(int) - c0
-    h, w = int(lr.max()) + 1, int(lc.max()) + 1
+    if "row" in fp.columns:
+        r0, c0 = int(fp["row"].min()), int(fp["col"].min())
+        lr, lc = fp["row"].to_numpy(int) - r0, fp["col"].to_numpy(int) - c0
+        h, w = int(lr.max()) + 1, int(lc.max()) + 1
+    else:   # baselines store only `pixel` (row in lstm/data/meta.parquet): place it via the field's inputs
+        inp = data.field_inputs(field, "data")
+        pos = fp["pixel"].to_numpy(int) - int(data.field_index().at[field, "start"])
+        lr, lc, h, w = inp["lr"][pos], inp["lc"][pos], inp["h"], inp["w"]
     img = lambda v: data.to_image(np.asarray(v, dtype=np.float32), lr, lc, h, w)
     vmin, vmax = np.nanpercentile(np.r_[fp["target"], fp["pred"]], [2, 98])
     err = fp["pred"] - fp["target"]

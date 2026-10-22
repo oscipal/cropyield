@@ -182,7 +182,7 @@ def history(path: str) -> pd.DataFrame:
 @st.cache_data(max_entries=3)
 def preds(path: str, role: str) -> pd.DataFrame:
     pf = pq.ParquetFile(Path(path) / f"preds_{role}.parquet")
-    cols = [c for c in ("field", "country", "crop", "year", "row", "col", "target", "pred", "pred_std")
+    cols = [c for c in ("pixel", "field", "country", "crop", "year", "row", "col", "target", "pred", "pred_std")
             if c in pf.schema_arrow.names]
     return pf.read(columns=cols).to_pandas()
 
