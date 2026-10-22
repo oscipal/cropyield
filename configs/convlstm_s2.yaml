@@ -1,7 +1,10 @@
 # ConvLSTM: the LSTM gates are 3 x 3 convolutions over the pixel's 5 x 5 neighbourhood (scripts/LSTM/convlstm.py),
-# otherwise as configs/lstm_patch_v3_s2.yaml (inputs, target, training, augmentation, 5 members).
+# otherwise as configs/lstm_patch_v3_s2.yaml (inputs, target, training, 5 members). Data: the 10-day S2 cube
+# (scripts/LSTM/11_build_s2_grid.py --window-days 10), time shift 3 steps (= 30 days); chosen in the val screening,
+# see docs/convlstm_screening.md.
 # Pooled all-crop splits only. scripts/LSTM/04_train_v2.py; needs scripts/LSTM/06_neighbours.py --k 5.
 name: convlstm_s2
+data_dir: data_w10           # folder under <work_dir>/lstm, 51 steps of 10 days
 paper_inputs: s2         # paper rows to compare with in 03_report.py
 seed: 42
 
@@ -37,7 +40,7 @@ train:
   patience: 10             # on field-balanced val MSE (t/ha)
   eval_batch_size: 4096
   gpu_data_max_gb: 2.0     # small: the GPU may be shared with other runs
-  augment: {time_shift: 1, step_dropout: 0.1}
+  augment: {time_shift: 3, step_dropout: 0.1}
 
 ensemble:
   n_members: 5             # Deep Ensemble; 1 = single model
