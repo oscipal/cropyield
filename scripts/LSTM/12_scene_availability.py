@@ -20,7 +20,9 @@ Grid and scene days as in 11_build_s2_grid.py (day = date - 1 Jan of the year be
                       water), "none" without a scene or when the chosen scene is fully valid
 
 Outputs: <work_dir>/scene_availability/windows_w<days>.parquet (one row per field-year x window, only shares and
-counts) and docs/scene_availability.md (aggregates per country x crop x calendar month). Only counts and aggregate
+counts), <work_dir>/scene_availability/scenes.parquet (one row per field-year x scene, every scene of the field:
+field, day, date, valid and the CAUSES shares, chosen = picked for this grid; for the visualizer's day strip) and
+docs/scene_availability.md (aggregates per country x crop x calendar month). Only counts and aggregate
 shares are printed; per-field output (--show, --check-dyn) refuses Swiss fields (CLAUDE.md).
 """
 from __future__ import annotations
@@ -64,24 +66,27 @@ def season_days(field_dir: Path, jan1) -> tuple[float, float]:
 
 
 def field_windows(field_dir: Path, rows: np.ndarray, cols: np.ndarray, days: int, start: int, n_times: int
-                  ) -> pd.DataFrame:
-    """One row per window of one field-year (columns as in the module docstring, without field/country/crop/year)."""
+                  ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """One row per window of one field-year (columns as in the module docstring, without field/country/crop/year),
+    and one row per scene (day, date, valid, CAUSES shares, chosen)."""
     jan1, sc = g11.scenes(field_dir)
     sow, harvest = season_days(field_dir, jan1)
     lo = start if np.isnan(sow) else sow
     hi = start + n_times * days if np.isnan(harvest) else harvest
     n_pix = len(rows)
     rec = {k: dict(n=0, n_season=0, best=-1.0, chosen=None) for k in range(n_times)}
+    scene_rows = []
     for day, _, scl_path in sc:                                   # one SCL raster in memory at a time
-        if not start <= day < start + n_times * days:
-            continue
-        k = (day - start) // days
         with rasterio.open(scl_path) as r:
             scl = r.read(1)
-        clouds = int(np.isin(scl, g11.CLOUD).sum())
         cnt = np.bincount(scl[rows, cols].ravel(), minlength=256)
         shares = {c: cnt[list(v)].sum() / n_pix for c, v in CAUSES.items()}
         valid = cnt[list(g11.CLEAR)].sum() / n_pix
+        scene_rows.append(dict(day=day, date=jan1 + timedelta(days=day + 1), valid=valid, **shares))
+        if not start <= day < start + n_times * days:
+            continue
+        k = (day - start) // days
+        clouds = int(np.isin(scl, g11.CLOUD).sum())
         w = rec[k]
         w["n"] += 1
         w["n_season"] += int(lo <= day < hi)
@@ -119,7 +124,10 @@ def field_windows(field_dir: Path, rows: np.ndarray, cols: np.ndarray, days: int
             cls = "partly_valid"
         row.update(**{"class": cls, "dominant_cause": cause})
         out.append(row)
-    return pd.DataFrame(out)
+    chosen = {w["chosen"][1] for w in rec.values() if w["chosen"] is not None}
+    scenes = pd.DataFrame(scene_rows, columns=["day", "date", "valid", *CAUSES])
+    scenes["chosen"] = scenes["day"].isin(chosen)
+    return pd.DataFrame(out), scenes
 
 
 def _work(task):
@@ -127,9 +135,9 @@ def _work(task):
     i, d, a, b = task
     G = g11._G
     try:
-        return i, field_windows(d, G["rows"][a:b], G["cols"][a:b], G["days"], G["start"], G["n_times"]), None
+        return i, *field_windows(d, G["rows"][a:b], G["cols"][a:b], G["days"], G["start"], G["n_times"]), None
     except Exception as e:                                         # noqa: BLE001  (reported as a count)
-        return i, None, f"{type(e).__name__}"
+        return i, None, None, f"{type(e).__name__}"
 
 
 # --------------------------------------------------------------------------- inputs
@@ -155,11 +163,12 @@ def load_fields(paths: dict, meta_path: Path) -> pd.DataFrame:
     return fields
 
 
-def run(fields: pd.DataFrame, meta_path: Path, days: int, start: int, n_times: int, workers: int) -> pd.DataFrame:
+def run(fields: pd.DataFrame, meta_path: Path, days: int, start: int, n_times: int, workers: int
+        ) -> tuple[pd.DataFrame, pd.DataFrame]:
     tasks = [(i, r.dir, r.start, r.stop) for i, r in fields.iterrows()]
-    parts, errors, t0 = [], {}, time.time()
+    parts, scene_parts, errors, t0 = [], [], {}, time.time()
     with Pool(workers, g11._init, (meta_path, None, days, start, n_times)) as pool:
-        for j, (i, df, err) in enumerate(pool.imap_unordered(_work, tasks, chunksize=2), 1):
+        for j, (i, df, sc, err) in enumerate(pool.imap_unordered(_work, tasks, chunksize=2), 1):
             if err:
                 errors[err] = errors.get(err, 0) + 1
             else:
@@ -169,6 +178,8 @@ def run(fields: pd.DataFrame, meta_path: Path, days: int, start: int, n_times: i
                 df.insert(0, "country", r.country)
                 df.insert(0, "field", r.field)
                 parts.append(df)
+                sc.insert(0, "field", r.field)
+                scene_parts.append(sc)
             if j % 50 == 0 or j == len(tasks):
                 el = time.time() - t0
                 print(f"  {j:,}/{len(tasks):,} field-years ({el:.0f} s, ETA {el / j * (len(tasks) - j):.0f} s)",
@@ -180,7 +191,10 @@ def run(fields: pd.DataFrame, meta_path: Path, days: int, start: int, n_times: i
         w[c] = pd.to_datetime(w[c])
     for c in ("country", "crop", "class", "dominant_cause"):
         w[c] = w[c].astype("category")
-    return w.sort_values(["country", "field", "step"], ignore_index=True)
+    scenes = pd.concat(scene_parts, ignore_index=True)
+    scenes["date"] = pd.to_datetime(scenes["date"])
+    return (w.sort_values(["country", "field", "step"], ignore_index=True),
+            scenes.sort_values(["field", "day"], ignore_index=True))
 
 
 # --------------------------------------------------------------------------- report
@@ -313,7 +327,7 @@ def show(fields, meta_path, name, days, start, n_times):
     if r.country == "Switzerland":
         raise SystemExit("per-field output is not allowed for Swiss fields (CLAUDE.md)")
     m = pd.read_parquet(meta_path, columns=["row", "col"]).iloc[r.start:r.stop]
-    w = field_windows(r.dir, m["row"].to_numpy(), m["col"].to_numpy(), days, start, n_times)
+    w, _ = field_windows(r.dir, m["row"].to_numpy(), m["col"].to_numpy(), days, start, n_times)
     cols = ["step", "window_start_date", "in_season", "n_scenes", "chosen_date", "chosen_valid", "best_valid",
             "chosen_cloud", "chosen_snow", "chosen_dark", "class", "dominant_cause"]
     with pd.option_context("display.width", 200, "display.float_format", "{:.3f}".format):
@@ -328,8 +342,8 @@ def check_dyn(fields, meta_path, data_dir, n, seed=0):
     m = pd.read_parquet(meta_path, columns=["row", "col"])
     worst = 0.0
     for r in pick.itertuples():
-        w = field_windows(r.dir, m["row"].to_numpy()[r.start:r.stop], m["col"].to_numpy()[r.start:r.stop],
-                          30, 0, 24)
+        w, _ = field_windows(r.dir, m["row"].to_numpy()[r.start:r.stop], m["col"].to_numpy()[r.start:r.stop],
+                             30, 0, 24)
         fin = np.isfinite(np.asarray(ref[r.start:r.stop, :, b])).mean(0)
         got = w["chosen_valid"].fillna(0).to_numpy()
         d = np.abs(got - fin).max()
@@ -369,7 +383,7 @@ def main() -> None:
         fields = fields.iloc[:args.limit]
 
     t0 = time.time()
-    w = run(fields, meta_path, days, start, n_times, args.workers)
+    w, scenes = run(fields, meta_path, days, start, n_times, args.workers)
     print(f"done in {time.time() - t0:.0f} s: {len(w):,} windows, {w['field'].nunique():,} field-years")
     print("missing sowing / harvest date (field-years):",
           int(w.groupby("field")["sow_day"].first().isna().sum()),
@@ -383,6 +397,9 @@ def main() -> None:
         out_path = out_dir / f"windows_w{days}_s{start}.parquet"
     w.to_parquet(out_path, index=False)
     print(f"wrote {out_path}")
+    if (days, start) == (30, 0) and not args.limit:   # the scenes do not depend on the grid, only `chosen` does
+        scenes.to_parquet(out_dir / "scenes.parquet", index=False)
+        print(f"wrote {out_dir / 'scenes.parquet'} ({len(scenes):,} scenes)")
     if not args.limit:
         doc = paths["docs_dir"] / ("scene_availability.md" if (days, start) == (30, 0)
                                    else f"scene_availability_w{days}_s{start}.md")

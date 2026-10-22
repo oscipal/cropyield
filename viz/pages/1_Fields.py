@@ -123,7 +123,7 @@ with tab_s2:
     step = st.session_state["s2_step"]
 
     scenes = data.scene_windows() if grid == "data" else None
-    hover, color = [], []
+    hover = []
     for k in range(n):
         s = sd.iloc[k]
         season = "in season" if s["in_season"] > 0 else "out of season"
@@ -139,13 +139,30 @@ with tab_s2:
             else:
                 txt += "\nno scene in this window"
         hover.append(txt)
-        color.append("#009E73" if valid[k] >= 0.5 else "#E69F00" if valid[k] >= 0.05 else "#999999")
     info = data.grid_info(grid)
     start_day, wdays = info.get("start_day", 0), info.get("window_days", 30)
-    pos = lambda d: (int(d) - start_day) / wdays
-    clicked = timeline(valid, sd["in_season"] > 0, [f"{d:%b %y}" for d in sd["start"]], hover, color, step,
-                       sow_x=pos(dates["sow_day"]), harvest_x=pos(dates["harvest_day"]),
-                       sow_label=f"{SOW:%d %b %y}", harvest_label=f"{HARVEST:%d %b %y}", key=f"tl_{grid}")
+    end_day = start_day + n * wdays
+    jan1 = pd.Timestamp(dates["jan1"])
+    day_of = lambda t: (pd.Timestamp(t) - jan1).days - 1          # src/season.py convention
+    fs = data.field_scenes(field)
+    scene_bars = []
+    if fs is not None:
+        causes = ["cloud", "cirrus", "shadow", "snow", "dark", "nodata", "water"]
+        for r in fs[(fs["day"] >= start_day) & (fs["day"] < end_day)].itertuples():
+            rest = sorted(((getattr(r, c), c) for c in causes if getattr(r, c) >= 0.005), reverse=True)
+            txt = (f"{r.date:%d %b %Y}: {r.valid:.0%} valid pixels" + "".join(f"\n  {c} {v:.0%}" for v, c in rest)
+                   + ("\nused by the 30-day cube" if r.chosen else ""))
+            scene_bars.append((r.day, r.valid, r.chosen and grid == "data", txt))
+    else:
+        st.caption("Day strip missing: run `python scripts/LSTM/12_scene_availability.py`.")
+    first = (jan1 + pd.Timedelta(days=start_day + 1)).to_period("M").to_timestamp()
+    month_starts = pd.date_range(first, jan1 + pd.Timedelta(days=end_day), freq="MS")
+    every = 1 if len(month_starts) <= 14 else 2
+    months = [(day_of(t), f"{t:%b %y}") for t in month_starts[::every] if start_day <= day_of(t) < end_day]
+    season = [(dates[k], f"{lab} {t:%d %b}", c) for k, lab, t, c in
+              (("sow_day", "sowing", SOW, "#009E73"), ("harvest_day", "harvest", HARVEST, "#D55E00"))
+              if pd.notna(dates[k]) and start_day <= dates[k] <= end_day]
+    clicked = timeline(n, start_day, wdays, step, hover, scene_bars, months, season, key=f"tl_{grid}")
     if clicked is not None and clicked != step:
         st.session_state["s2_step"] = int(clicked)
         st.rerun()

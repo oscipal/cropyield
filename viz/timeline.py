@@ -1,5 +1,9 @@
-"""Time-step chooser for the Sentinel-2 tab: one bar per step (height = share of valid pixels, hover = window, scene and
-validity), ticks for the in-season steps, sowing / harvest markers. Click a bar or tick, or use the arrow keys."""
+"""Time-step slider for the Sentinel-2 tab, full width, on a day axis:
+    day strip   one small bar per day with a Sentinel-2 scene (height = share of valid pixels; darker = the scene the
+                cube uses for its window); hover for the date, valid share and what covers the rest
+    track       the slider: small ticks at the window limits, tall ticks at sowing and harvest, the chosen window
+                shaded; click or drag on it (or on the strip) to choose a window, or use the arrow keys
+    labels      months"""
 from __future__ import annotations
 
 import json
@@ -7,94 +11,111 @@ import json
 import streamlit as st
 
 CSS = """
-.tl { font: 12px var(--st-font, sans-serif); color: var(--st-text-color, #333); user-select: none; outline: none; }
-.tl svg { width: 100%; height: 118px; display: block; overflow: visible; }
-.tl .hit { fill: transparent; cursor: pointer; }
-.tl .hit:hover { fill: rgba(127,127,127,0.12); }
-.tl .sel { fill: rgba(255,0,255,0.13); stroke: #ff00ff; stroke-width: 1.5; }
-.tl .tip { position: absolute; pointer-events: none; background: var(--st-background-color, #fff);
+.tl { font: 12px var(--st-font, sans-serif); color: var(--st-text-color, #333); user-select: none; outline: none;
+      position: relative; padding: 0 2px; }
+.tl .strip { position: relative; height: 26px; }
+.tl .scene { position: absolute; bottom: 0; background: #cfcfcf; border-radius: 1px 1px 0 0; pointer-events: none; }
+.tl .scene.chosen { background: #8f8f8f; }
+.tl .scene.hl { background: #333; }
+.tl .shit { position: absolute; top: 0; bottom: 0; width: 7px; margin-left: -3.5px; cursor: pointer; }
+.tl .track { position: relative; height: 36px; cursor: pointer; touch-action: none; }
+.tl .line { position: absolute; left: 0; right: 0; top: 17px; height: 3px; background: #c8c8c8; border-radius: 2px; }
+.tl .tick { position: absolute; top: 13px; height: 11px; width: 1px; background: #9a9a9a; }
+.tl .season { position: absolute; top: 2px; height: 33px; width: 2px; margin-left: -1px; }
+.tl .slabel { position: absolute; top: -1px; font-size: 10px; white-space: nowrap; transform: translateX(4px); }
+.tl .sel { position: absolute; top: 9px; height: 19px; background: rgba(255,75,75,0.22);
+           border-left: 2px solid var(--st-primary-color, #ff4b4b); border-right: 2px solid var(--st-primary-color, #ff4b4b);
+           border-radius: 2px; box-sizing: border-box; pointer-events: none; }
+.tl .labels { position: relative; height: 14px; color: #888; font-size: 11px; }
+.tl .labels span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.tl .tip { position: absolute; pointer-events: none; background: var(--st-background-color, #fff); z-index: 10;
            border: 1px solid #999; border-radius: 4px; padding: 4px 7px; white-space: pre; display: none;
-           box-shadow: 0 2px 6px rgba(0,0,0,0.2); z-index: 10; }
-.tl .wrap { position: relative; }
+           box-shadow: 0 2px 6px rgba(0,0,0,0.2); font-size: 12px; }
 """
 
 JS = """
 export default function(component) {
-  const { data, setTriggerValue, parentElement } = component;
+  const { data: d, setTriggerValue, parentElement } = component;
+  const doc = parentElement.getRootNode();
+  const hadFocus = !!(doc.activeElement && parentElement.contains(doc.activeElement));
   parentElement.innerHTML = "";
-  const d = data;
-  const n = d.valid.length;
-  const root = document.createElement("div"); root.className = "tl"; root.tabIndex = 0;
-  const wrap = document.createElement("div"); wrap.className = "wrap"; root.appendChild(wrap);
-  const tip = document.createElement("div"); tip.className = "tip"; wrap.appendChild(tip);
-  const W = 1000, top = 18, barH = 56, trackY = top + barH + 14;
-  const svgNS = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(svgNS, "svg");
-  svg.setAttribute("viewBox", `0 0 ${W} 118`); svg.setAttribute("preserveAspectRatio", "none");
-  wrap.appendChild(svg);
-  const x = (i) => (i + 0.5) * W / n, bw = Math.max(2, W / n * 0.7);
-  const el = (tag, attrs) => { const e = document.createElementNS(svgNS, tag);
-    for (const k in attrs) e.setAttribute(k, attrs[k]); svg.appendChild(e); return e; };
-  // season band on the track
-  if (d.sow_x !== null && d.harvest_x !== null) {
-    el("rect", { x: d.sow_x * W / n, y: trackY - 3, width: Math.max(1, (d.harvest_x - d.sow_x) * W / n),
-                 height: 6, fill: "#009E73", opacity: 0.35, rx: 3 });
+  const total = d.n * d.wdays;
+  const pct = (day) => 100 * (day - d.start) / total;                  // % of the width for a day
+  const div = (cls, parent) => { const e = document.createElement("div"); e.className = cls;
+    parent.appendChild(e); return e; };
+  const root = div("tl", parentElement); root.tabIndex = 0;
+  const tip = div("tip", root);
+  const showTip = (e, text) => {
+    tip.textContent = text; tip.style.display = "block";
+    const r = root.getBoundingClientRect();
+    let left = e.clientX - r.left + 12; if (left > r.width - 280) left = e.clientX - r.left - 290;
+    tip.style.left = Math.max(0, left) + "px"; tip.style.top = (e.clientY - r.top + 16) + "px";
+  };
+  const hideTip = () => { tip.style.display = "none"; };
+
+  // day strip
+  const strip = div("strip", root);
+  const bw = `max(2px, ${100 / total}%)`;
+  for (const [day, valid, chosen, text] of d.scenes) {
+    const b = div("scene" + (chosen ? " chosen" : ""), strip);
+    b.style.left = `calc(${pct(day + 0.5)}% - ${bw} / 2)`; b.style.width = bw;
+    b.style.height = `${4 + Math.round(22 * valid)}px`;
+    const h = div("shit", strip); h.style.left = `${pct(day + 0.5)}%`;
+    h.addEventListener("mousemove", (e) => { b.classList.add("hl"); showTip(e, text); });
+    h.addEventListener("mouseleave", () => { b.classList.remove("hl"); hideTip(); });
+    h.addEventListener("click", () => setTriggerValue("step", Math.floor((day - d.start) / d.wdays)));
   }
-  el("line", { x1: 0, x2: W, y1: trackY, y2: trackY, stroke: "#999", "stroke-width": 1 });
-  for (let i = 0; i < n; i++) {
-    if (i === d.value) el("rect", { x: i * W / n, y: 2, width: W / n, height: trackY + 10, class: "sel", rx: 2 });
-    const v = d.valid[i];
-    if (v > 0) {
-      const h = Math.max(2, v * barH);
-      el("rect", { x: x(i) - bw / 2, y: top + barH - h, width: bw, height: h, fill: d.color[i], rx: 1 });
-    } else if (d.in_season[i]) {
-      el("rect", { x: x(i) - bw / 2, y: top + barH - 2, width: bw, height: 2, fill: "#bbbbbb" });
-    }
-    if (d.in_season[i]) el("line", { x1: x(i), x2: x(i), y1: trackY - 7, y2: trackY + 7, stroke: "#333",
-                                     "stroke-width": 1.5 });
-    else el("line", { x1: x(i), x2: x(i), y1: trackY - 2, y2: trackY + 2, stroke: "#bbb", "stroke-width": 1 });
-    if (d.label_every && i % d.label_every === 0) {
-      const t = el("text", { x: x(i), y: trackY + 22, "text-anchor": "middle", "font-size": 11, fill: "#777" });
-      t.textContent = d.short[i];
-    }
-    const hit = el("rect", { x: i * W / n, y: 0, width: W / n, height: trackY + 12, class: "hit" });
-    hit.addEventListener("click", () => setTriggerValue("step", i));
-    hit.addEventListener("mousemove", (e) => {
-      tip.textContent = d.hover[i]; tip.style.display = "block";
-      const r = wrap.getBoundingClientRect();
-      let left = e.clientX - r.left + 12; if (left > r.width - 260) left = e.clientX - r.left - 270;
-      tip.style.left = left + "px"; tip.style.top = "0px";
-    });
-    hit.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+
+  // track
+  const track = div("track", root);
+  div("line", track);
+  for (let k = 0; k <= d.n; k++) div("tick", track).style.left = `${pct(d.start + k * d.wdays)}%`;
+  for (const [day, label, col] of d.season) {
+    const s = div("season", track); s.style.left = `${pct(day)}%`; s.style.background = col;
+    const t = div("slabel", track); t.style.left = `${pct(day)}%`; t.style.color = col; t.textContent = label;
   }
-  for (const [key, label, col] of [["sow_x", "sowing", "#009E73"], ["harvest_x", "harvest", "#D55E00"]]) {
-    if (d[key] === null) continue;
-    const xx = d[key] * W / n;
-    el("line", { x1: xx, x2: xx, y1: top - 4, y2: trackY + 9, stroke: col, "stroke-width": 2,
-                 "stroke-dasharray": "4 3" });
-    const t = el("text", { x: xx, y: top - 7, "text-anchor": "middle", "font-size": 11, fill: col });
-    t.textContent = label + " " + d[key + "_label"];
-  }
-  root.addEventListener("keydown", (e) => {
-    if (e.key === "ArrowRight" && d.value < n - 1) setTriggerValue("step", d.value + 1);
-    if (e.key === "ArrowLeft" && d.value > 0) setTriggerValue("step", d.value - 1);
+  const sel = div("sel", track);
+  const place = (k) => { sel.style.left = `${pct(d.start + k * d.wdays)}%`; sel.style.width = `${100 / d.n}%`; };
+  let cur = d.value; place(cur);
+  const stepAt = (e) => { const r = track.getBoundingClientRect();
+    return Math.min(d.n - 1, Math.max(0, Math.floor((e.clientX - r.left) / r.width * d.n))); };
+  let dragging = false;
+  track.addEventListener("pointerdown", (e) => { dragging = true; track.setPointerCapture(e.pointerId);
+    cur = stepAt(e); place(cur); root.focus(); });
+  track.addEventListener("pointermove", (e) => {
+    const k = stepAt(e);
+    if (dragging && k !== cur) { cur = k; place(cur); }
+    showTip(e, d.windows[k]);
   });
-  parentElement.appendChild(root);
+  track.addEventListener("pointerup", () => { if (dragging) { dragging = false;
+    if (cur !== d.value) setTriggerValue("step", cur); } });
+  track.addEventListener("mouseleave", hideTip);
+  root.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowRight" && d.value < d.n - 1) { e.preventDefault(); setTriggerValue("step", d.value + 1); }
+    if (e.key === "ArrowLeft" && d.value > 0) { e.preventDefault(); setTriggerValue("step", d.value - 1); }
+  });
+
+  // month labels
+  const labels = div("labels", root);
+  for (const [day, text] of d.months) {
+    const s = document.createElement("span"); s.style.left = `${pct(day)}%`; s.textContent = text;
+    labels.appendChild(s);
+  }
+  if (hadFocus) root.focus();
 }
 """
 
 _component = st.components.v2.component("s2_timeline", css=CSS, js=JS)
 
 
-def timeline(valid, in_season, short, hover, color, value: int, sow_x=None, harvest_x=None, sow_label="",
-             harvest_label="", key: str = "timeline") -> int | None:
-    """Render the timeline; returns the clicked step (or None if nothing was clicked in this run).
-    sow_x / harvest_x: position in step units (step index + fraction of the window)."""
-    n = len(valid)
-    data = {"valid": [float(v) for v in valid], "in_season": [bool(s) for s in in_season], "short": list(short),
-            "hover": list(hover), "color": list(color), "value": int(value),
-            "sow_x": None if sow_x is None else float(sow_x), "harvest_x": None if harvest_x is None else float(harvest_x),
-            "sow_x_label": sow_label, "harvest_x_label": harvest_label, "label_every": max(1, round(n / 12))}
+def timeline(n: int, start_day: int, window_days: int, value: int, windows: list[str], scenes: list, months: list,
+             season: list, key: str = "timeline") -> int | None:
+    """Render the slider; returns the newly chosen step (or None if nothing changed in this run).
+    Days in the cube convention (src/season.py). windows: hover text per step; scenes: [(day, valid share, chosen,
+    hover text)]; months: [(day, label)]; season: [(day, label, colour)] for sowing / harvest."""
+    data = {"n": int(n), "start": int(start_day), "wdays": int(window_days), "value": int(value),
+            "windows": list(windows), "scenes": [[int(a), float(b), bool(c), str(t)] for a, b, c, t in scenes],
+            "months": [[int(a), str(t)] for a, t in months], "season": [[float(a), str(t), c] for a, t, c in season]}
     json.dumps(data)   # fail early on non-serialisable values
     res = _component(data=data, key=key, on_step_change=lambda: None)
     return getattr(res, "step", None)

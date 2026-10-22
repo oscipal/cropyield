@@ -284,6 +284,20 @@ def scene_windows() -> pd.DataFrame | None:
     return pd.read_parquet(path).set_index(["field", "step"]) if path.exists() else None
 
 
+@st.cache_data
+def _scenes() -> pd.DataFrame | None:
+    path = WORK / "scene_availability" / "scenes.parquet"
+    return pd.read_parquet(path) if path.exists() else None
+
+
+def field_scenes(field: str) -> pd.DataFrame | None:
+    """Every Sentinel-2 scene of a field-year: day (cube convention), date, valid and cloud / cirrus / shadow / snow /
+    dark / nodata / water shares of the field's pixels, chosen = used by the 30-day cube
+    (scripts/LSTM/12_scene_availability.py). None if that script has not been run."""
+    s = _scenes()
+    return None if s is None else s[s["field"] == field]
+
+
 # --------------------------------------------------------------------------- soil and terrain
 
 DEPTHS = ["0-5", "5-15", "15-30", "30-60", "60-100", "100-200"]
