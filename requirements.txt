@@ -9,3 +9,8 @@ pyyaml
 wandb
 tabulate
 rasterio   # scripts/05_build_field_table.py (raw GeoTIFF footprints)
+streamlit  # viz/ (browser visualizer)
+plotly
+folium
+streamlit-folium
+geopandas  # viz/build_index.py, scripts/08_export_field_shapes.py

@@ -60,11 +60,22 @@ src/
   metrics.py              field- and pixel-level R² and RMSE
   splits.py               load_split()
   splitting.py            split construction and scoring (used by 06/07)
+viz/                      browser visualizer (Streamlit): fields + inputs, runs, predictions, splits
+  run.sh                  starts it on 127.0.0.1:8501 (builds viz/build_index.py outputs on first start)
 docs/
   results_lstm.md         LSTM results, compared with the paper
   splits.md               dataset statistics and every split
   Yieldsat.pdf            the YieldSAT paper
 ```
+
+## Visualizer
+
+```
+bash viz/run.sh                                  # on the server (setsid nohup ... & to keep it running)
+ssh -L 8501:localhost:8501 pf-pc37.ethz.ch       # on your laptop, then open http://localhost:8501
+```
+It reads only derived files in `work_dir` (memmaps sliced per field) and binds to localhost only: the data holds
+exact field locations, do not expose or host it.
 
 ## Pipeline
 
