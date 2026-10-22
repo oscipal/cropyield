@@ -130,10 +130,11 @@ def field_map(gdf, color_col: str, colors: dict | None = None, cmap: str = "viri
         dots["geometry"] = dots.geometry.representative_point()
         folium.GeoJson(
             dots.to_json(), name="field dots", marker=folium.CircleMarker(radius=5),
-            style_function=lambda f: {"fillColor": color_of(f["properties"][color_col]), "fillOpacity": 0.9,
-                                      "color": "#ff00ff" if f["properties"]["field"] == selected else "#333333",
-                                      "weight": 3 if f["properties"]["field"] == selected else 0.8,
-                                      "radius": 8 if f["properties"]["field"] == selected else 5},
+            style_function=lambda f: {"fill": True, "fillColor": color_of(f["properties"][color_col]),
+                                      "fillOpacity": 0.95,
+                                      "color": "#ff00ff" if f["properties"]["field"] == selected else "#ffffff",
+                                      "weight": 3 if f["properties"]["field"] == selected else 1,
+                                      "radius": 9 if f["properties"]["field"] == selected else 6},
             tooltip=folium.GeoJsonTooltip(fields=cols)).add_to(fg)
     folium.LayerControl(collapsed=True).add_to(m)
     _DotToggle(DOT_MAX_ZOOM).add_to(m)
