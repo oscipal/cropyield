@@ -72,7 +72,8 @@ src/
   splits.py               load_split()
   season.py               sowing / harvest dates of a field-year on the cube's day axis
   splitting.py            split construction and scoring (used by 06/07)
-viz/                      browser visualizer (Streamlit): fields + inputs, runs, predictions, splits
+viz/                      browser visualizer (Streamlit): fields + inputs, runs, predictions, splits, configure run
+                          (writes configs/custom/<name>.yaml for 04_train_v2.py; never starts training)
   run.sh                  starts it on 127.0.0.1:8501 (builds viz/build_index.py outputs on first start)
 docs/
   results_summary.md      short comparison of all models (scripts/LSTM/10_summary.py)
