@@ -175,18 +175,32 @@ class LoaderSpec:
                 "static_mean": sc.static_mean.tolist(), "static_std": sc.static_std.tolist()}
 
 
-def loader_inputs(split_name: str, inputs: dict, idx: dict):
-    """X[r] = (Xd float16 (n, T, F), Xs float16 (n, S)) from src/loader.py, z-scored with training statistics in
-    float32, NaN -> 0 (`observed` marks real steps). Config: inputs.features (list of specs), inputs.grid."""
-    feats, grid = inputs["features"], inputs["grid"]
-    sc = fit_scaler(split=split_name, role="train", features=feats, grid=grid)
-    X, d0 = {}, None
+TIME_OPTIONS = ("align", "season")                                 # applied to train, val and test
+FILTER_OPTIONS = ("edge_buffer_m", "min_observed", "countries", "crops", "years")   # inputs.train_filters only
+
+
+def loader_inputs(split_name: str, inputs: dict, patch: int | None):
+    """X[r] = (Xd float16 (n, T, F), Xs float16 (n, S), nbr or None) and the pixel rows of every set, from
+    src/loader.py, z-scored with training statistics in float32, NaN -> 0 (`observed` marks real steps).
+    Config: inputs.features (list of specs), inputs.grid, optional inputs.align / inputs.season (all sets) and
+    inputs.train_filters (training pixels only, so val / test stay comparable between runs)."""
+    common = {"features": inputs["features"], "grid": inputs["grid"],
+              **{k: inputs[k] for k in TIME_OPTIONS if k in inputs}}
+    filters = dict(inputs.get("train_filters") or {})
+    unknown = set(filters) - set(FILTER_OPTIONS)
+    if unknown:
+        raise KeyError(f"unknown train_filters {sorted(unknown)}; known: {FILTER_OPTIONS}")
+    if "season" in common:
+        common["season"] = tuple(common["season"])
+    sc = fit_scaler(split=split_name, role="train", **common, **filters)
+    X, rows, d0 = {}, {}, None
     for r in (0, 1, 2):
-        d = load(split_name, ROLE_NAMES[r], feats, grid=grid, scaler=sc)
-        assert np.array_equal(d.rows, idx[r]), "loader rows differ from the split rows of meta.parquet"
-        X[r] = (torch.from_numpy(d.dyn), torch.from_numpy(d.static.astype(np.float16)))
+        d = load(split_name, ROLE_NAMES[r], **common, **(filters if r == 0 else {}), patch=patch, scaler=sc)
+        nbr = None if d.nbr is None else torch.from_numpy(d.nbr)
+        X[r] = (torch.from_numpy(d.dyn), torch.from_numpy(d.static.astype(np.float16)), nbr)
+        rows[r] = d.rows
         d0 = d if r == 0 else d0
-    return LoaderSpec(d0, sc, inputs), X
+    return LoaderSpec(d0, sc, inputs), X, rows
 
 
 def prepare_split(split_name, cfg, data) -> dict:
@@ -205,7 +219,11 @@ def prepare_split(split_name, cfg, data) -> dict:
 
     t0 = time.time()
     if "features" in cfg["inputs"]:
-        spec, X = loader_inputs(split_name, cfg["inputs"], idx)
+        mc = cfg["model"]
+        patch = mc["patch_size"] if mc.get("type", "lstm") in ("patch", "convlstm") else None
+        spec, X, idx = loader_inputs(split_name, cfg["inputs"], patch)   # train rows may be filtered
+        if len(idx[0]) != len(np.flatnonzero(role == 0)):
+            print(f"  train_filters: {len(idx[0]):,} of {int((role == 0).sum()):,} training pixels kept", flush=True)
     else:  # legacy configs: inputs.dynamic / static / indices / mask_channel / categorical on cfg["data_dir"]
         spec = FeatureSpec(cfg["inputs"], info).fit(dyn, stat, idx[0], meta)
         X = {r: spec.transform(dyn, stat, idx[r], meta) for r in (0, 1, 2)}
@@ -273,7 +291,9 @@ def run_split(split_name, cfg, data, out_dir, device, use_wandb):
     tc = cfg["train"]
     prep = prepare_split(split_name, cfg, data)
     idx, X, scal = prep["idx"], prep["X"], prep["scal"]
-    if cfg["model"].get("type", "lstm") in ("patch", "convlstm"):
+    if "features" in cfg["inputs"]:  # the loader already added the neighbour tables (or None)
+        pass
+    elif cfg["model"].get("type", "lstm") in ("patch", "convlstm"):
         nbr_all = np.load(info["data_dir"] / f"nbr_k{cfg['model']['patch_size']}.npy", mmap_mode="r")
         X = {r: (*X[r], local_neighbours(nbr_all, idx[r], len(meta))) for r in X}
     else:

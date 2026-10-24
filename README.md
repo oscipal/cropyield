@@ -149,8 +149,12 @@ d.dyn, d.static, d.y, d.meta, d.dyn_names, d.static_names, d.units, d.days
 ds = YieldDataset(d, fit_scaler(d))   # torch Dataset, z-scored, NaN -> 0
 ```
 
-`04_train_v2.py` uses the loader for configs with `inputs: {features: [...], grid: 10d}`; configs with
-`inputs.dynamic` keep the old input path (`work_dir/lstm/data`, 24 × 30 days).
+Options: `align="sowing"|"harvest"` with `season=(first, last)` days (e.g. inputs up to two months before
+harvest), `patch=k` for any odd k, pixel filters `edge_buffer_m`, `min_observed`, `countries` / `crops` / `years`,
+`pixels_per_field`; table in `docs/features.md`. `04_train_v2.py` uses the loader for configs with
+`inputs: {features: [...], grid: 10d}` (optional `align`, `season`, and `train_filters` for the training pixels
+only; quote specs with commas in YAML); configs with `inputs.dynamic` keep the old input path
+(`work_dir/lstm/data`, 24 × 30 days).
 
 ### 3. Train and evaluate
 
