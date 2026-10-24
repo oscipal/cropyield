@@ -7,6 +7,9 @@
 2. Weather equals <grid>/weather.npy of the pixel's field; terrain equals terrain.npy; soil single layers equal
    static.npy x unit factor.
 3. Split membership equals src/splits.py; shapes, names and days follow info.json; YieldDataset batches are finite.
+4. Options: patch k=5 equals the prebuilt nbr_k5.npy, k=3 is the centre of k=7; align="sowing" step m equals grid
+   window (sow window + m); season slices the calendar grid; edge distances equal a brute-force search; the scaler
+   streamed with filters equals the scaler of the loaded data.
 Only counts and pass/fail are printed.
 """
 from __future__ import annotations
@@ -23,7 +26,7 @@ from lstm_v2 import FeatureSpec  # noqa: E402
 
 from src import soil  # noqa: E402
 from src.config import load_paths  # noqa: E402
-from src.loader import GRIDS, YieldDataset, fit_scaler, load  # noqa: E402
+from src.loader import GRIDS, YieldDataset, _base, edge_distance, fit_scaler, load, neighbours, seasons  # noqa: E402
 from src.splits import load_split  # noqa: E402
 
 SPLIT = "europe/loyo/all"
@@ -77,6 +80,44 @@ def main() -> None:
     xd, xs, y = (np.stack([b[i].numpy() for b in ds.__getitems__(np.arange(0, len(d), 997))]) for i in range(3))
     check("YieldDataset patch batch finite", np.isfinite(xd).all() and np.isfinite(xs).all(), f"{xd.shape}")
     check("one-hot left unscaled", set(np.unique(xs[:, -1])) <= {0.0, 1.0})
+    print("options")
+    work_meta = _base()["meta"]
+    base = load(SPLIT, "val", ["s2:B04", "observed", "weather:tmean_c"], grid="10d", dtype=np.float32, verbose=False)
+    nb5 = np.load(work / "data" / "nbr_k5.npy", mmap_mode="r")[base.rows]
+    loc = np.full(len(work_meta), -1)
+    loc[base.rows] = np.arange(len(base.rows))
+    check("patch 5 = nbr_k5.npy", np.array_equal(neighbours(base.rows, 5), np.where(nb5 >= 0, loc[np.maximum(nb5, 0)], -1)))
+    n7 = neighbours(base.rows, 7)
+    check("patch 3 = centre of patch 7", np.array_equal(neighbours(base.rows, 3),
+                                                       n7[:, [r * 7 + c for r in range(2, 5) for c in range(2, 5)]]))
+    sw = load(SPLIT, "val", ["s2:B04", "observed", "weather:tmean_c"], grid="10d", align="sowing", dtype=np.float32,
+              verbose=False)
+    k0 = (seasons()["sow_day"].reindex(sw.meta["field"]).to_numpy() - 210) // 10
+    ok = True
+    for i in range(0, len(sw), 101):
+        for m in range(len(sw.days)):
+            k = k0[i] + m
+            ref = base.dyn[i, k] if 0 <= k < base.dyn.shape[1] else np.array([np.nan, 0, np.nan], np.float32)
+            ok &= np.array_equal(sw.dyn[i, m], ref, equal_nan=True)
+    check("align sowing = shifted calendar grid", ok, f"days {sw.days[0]}..{sw.days[-1]}")
+    cal = load(SPLIT, "val", ["observed"], grid="10d", season=(300, 400), dtype=np.float32, verbose=False)
+    check("season (300, 400) = calendar slice", np.array_equal(cal.dyn[..., 0], base.dyn[:, 9:19, 1]))
+    d = edge_distance(base.rows)
+    fld = base.meta["field"].iloc[0]
+    allr = np.flatnonzero(work_meta["field"].to_numpy() == fld)
+    R, C = (work_meta[c].to_numpy().astype(int)[allr] for c in ("row", "col"))
+    occupied = set(zip(R, C))
+    empty = np.array([(i, j) for i in range(R.min() - 1, R.max() + 2) for j in range(C.min() - 1, C.max() + 2)
+                      if (i, j) not in occupied])
+    sel = np.flatnonzero(base.meta["field"].to_numpy() == fld)
+    pts = np.stack([base.meta["row"].to_numpy().astype(int)[sel], base.meta["col"].to_numpy().astype(int)[sel]], 1)
+    brute = np.sqrt(((empty[None] - pts[:, None]) ** 2).sum(-1)).min(1) * 10
+    check("edge distance = brute force (one field)", np.allclose(brute, d[sel]))
+    kw = dict(split=SPLIT, role="train", features=["s2", "observed", "terrain", "crop"], grid="10d", align="sowing",
+              edge_buffer_m=20, min_observed=5, pixels_per_field=300)
+    a, b = fit_scaler(**kw), fit_scaler(load(**kw, verbose=False))
+    check("streamed scaler = scaler of loaded data", np.allclose(a.dyn_mean, b.dyn_mean, rtol=1e-3)
+          and np.allclose(a.static_mean, b.static_mean, rtol=1e-5))
     print("ALL OK" if OK else "SOME CHECKS FAILED")
     sys.exit(0 if OK else 1)
 

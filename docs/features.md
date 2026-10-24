@@ -21,6 +21,23 @@ Feature specs are `group` or `group:argument` (e.g. `s2:B04,B08`, `weather:tmean
 | `15d` | 34 | 33% |
 | `10d` | 51 | 29% |
 
+## Loader options
+
+| option | values | what |
+|---|---|---|
+| `grid` | `30d`, `15d`, `10d` | window length of the time axis |
+| `align` | `calendar` (default), `sowing`, `harvest` | step 0 = 1 Jan of the year before harvest / the window containing the field-year's sowing / harvest date (exact to one window); steps outside the built grid are NaN, observed 0 |
+| `season` | `(first, last)` days | keep steps whose start day (`d.days`) is in [first, last); defaults calendar (210, 720), sowing (0, 360), harvest (-360, 0); e.g. `align="harvest", season=(-360, -60)` ends the inputs two months before harvest |
+| `countries`, `crops`, `years` | lists | keep only these pixels |
+| `edge_buffer_m` | metres | drop pixels within this distance of the field edge (10 = outermost ring; holes in the yield map count as edge); the Swiss Perich farm is already buffered by 20 m |
+| `min_observed` | count | drop pixels with fewer clear S2 observations on the selected steps |
+| `pixels_per_field`, `seed` | count | random subsample per field-year |
+| `patch` | any odd k | (pixels, k × k) neighbour table over the loaded pixels of the same field-year (-1 = no pixel, or filtered / not sampled) |
+| `dtype`, `scaler` | float16 (default) / float32; a fitted Scaler | storage type; z-score while loading (one rounding) |
+
+Sowing dates: Uruguay all "Estimated" (day 314–315, about 10 November); 16 German and 19 Swiss field-years use a fixed 290 / 333 days before harvest. In `04_train_v2.py`, `align` / `season` apply to train, val and test, `inputs.train_filters` (edge_buffer_m, min_observed, countries, crops, years) to the training pixels only.
+
+
 Coverage (`present`) = share of values that are not NaN in 200 random pixels of every field-year; for dynamic features over all steps of the 10-day grid, so it includes windows outside the season. Medians are not shown for Switzerland (Swiss values are not inspected).
 
 ## `s2` (per time step)
