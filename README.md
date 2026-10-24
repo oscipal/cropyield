@@ -14,7 +14,7 @@ The repository contains
 3. **LSTM v2**, the paper LSTM with extra inputs, per-crop target scaling, field-balanced training,
    regularisation and a 5-member Deep Ensemble.
 
-Results: `docs/results_lstm.md`.
+Results: `docs/results_summary.md` (all models, short), full tables in `docs/results_convlstm.md` (current split suite) and `docs/results_lstm.md` (old suite, before Switzerland); also on the visualizer's homepage.
 
 ## Setup
 
@@ -75,7 +75,12 @@ src/
 viz/                      browser visualizer (Streamlit): fields + inputs, runs, predictions, splits
   run.sh                  starts it on 127.0.0.1:8501 (builds viz/build_index.py outputs on first start)
 docs/
-  results_lstm.md         LSTM results, compared with the paper
+  results_summary.md      short comparison of all models (scripts/LSTM/10_summary.py)
+  results_convlstm.md     full tables on the current split suite, ConvLSTM and 10-day S2 series
+  results_lstm.md         full tables on the old split suite (before Switzerland), compared with the paper
+  convlstm_screening.md   val-only screening of the ConvLSTM variants
+  features.md             every loader feature: unit, source, known issues, coverage per country
+  scene_availability.md   Sentinel-2 scene availability per window (scripts/LSTM/12_scene_availability.py)
   splits.md               dataset statistics and every split
   Yieldsat.pdf            the YieldSAT paper
 ```
@@ -154,7 +159,8 @@ python scripts/LSTM/02_train.py --config configs/lstm_s2.yaml        # paper LST
 python scripts/LSTM/02_train.py --config configs/lstm_s2_adm.yaml    # paper LSTM, S2 + ADM (~3 h)
 python scripts/LSTM/04_train_v2.py --config configs/lstm_v2_s2.yaml  # LSTM v2              (~4 h)
 python scripts/LSTM/07_train_field_image.py --config configs/field_image_s2.yaml   # field-image model (not run yet)
-python scripts/LSTM/03_report.py                                     # -> docs/results_lstm.md
+python scripts/LSTM/03_report.py --out docs/results_<topic>.md       # full tables of the given --configs
+python scripts/LSTM/10_summary.py                                    # -> docs/results_summary.md
 ```
 
 `03_report.py` reports the configs given with `--configs` (default: paper LSTMs, v2, baselines); add
