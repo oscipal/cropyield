@@ -43,6 +43,8 @@ scripts/
   05_build_field_table.py one row per field-year (physical fields, regions)
   06_make_split_suite.py  builds the 24 splits
   07_split_report.py      writes docs/splits.md
+  check_loader.py         src/loader.py against the old input pipeline and the source files
+  features_doc.py         writes docs/features.md from src/features.py
   LSTM/
     01_extract.py         NetCDF -> memmaps for training (once)
     02_train.py           paper LSTM, one model per split
@@ -53,11 +55,18 @@ scripts/
     07_train_field_image.py  field-image model, one ensemble per split (inputs and outputs as 04)
     field_image.py        field images from the pixel memmaps, crops, tiles, encoder + U-Net
     check_field_image.py  data alignment and shape checks (--gpu: memory of a training step)
+    convlstm.py           ConvLSTM model (gates = convolutions over the pixel's neighbourhood)
+    check_convlstm.py     ConvLSTM shape / gradient checks
+    11_build_s2_grid.py   Sentinel-2 cubes on 30 / 15 / 10-day windows from the raw scenes -> lstm/data_w<days>/
     12_scene_availability.py  per field x window: scenes, valid share, cause of gaps -> docs/scene_availability.md
     13_build_weather_grid.py  ERA5 weather per field on the S2 time grids (degC, mm, GDD, ...) -> lstm/<grid>/weather.npy
+    14_build_terrain.py   elevation, slope, aspect, curvature recomputed from the raw DEM -> lstm/terrain.npy
     paper_lstm_results.yaml   the paper's LSTM results (appendix Tab. 13–18)
 src/
   config.py               loads configs/paths.yaml
+  loader.py               load(): pick features and time grid, get arrays; fit_scaler, YieldDataset (torch)
+  features.py             registry of the loader's features (groups, units, sources, known issues)
+  soil.py                 SoilGrids soil in physical units, depth selection
   data.py                 opening the NetCDF files, decoded pixel metadata
   metrics.py              field- and pixel-level R² and RMSE
   splits.py               load_split()
@@ -112,6 +121,31 @@ python scripts/LSTM/01_extract.py
 Writes `work_dir/lstm/data` (~23 GB): the 16 bands that change over time (12 S2 + 4 weather) as
 pixels × 24 × 16, the 104 static bands (soil, topography, coordinates) once per pixel, and pixel metadata. Bands are
 matched by name, since their order differs between the country files.
+
+### 2b. Inputs on the 30 / 15 / 10-day grids and the loader (once, already built)
+
+```bash
+python scripts/LSTM/11_build_s2_grid.py --window-days 10   # also 15, 30 -> work_dir/lstm/data_w<days>/
+python scripts/LSTM/13_build_weather_grid.py               # weather on every grid
+python scripts/LSTM/14_build_terrain.py                    # -> work_dir/lstm/terrain.npy (~30 s)
+python scripts/check_loader.py                             # loader checks
+python scripts/features_doc.py                             # -> docs/features.md
+```
+
+The delivered weather bands are sums between selected scenes (K, m) and the delivered slope / curvature / TWI are
+inconsistent between countries, so these are rebuilt from the raw files; `docs/features.md` lists every feature
+with unit, source and known issues. Load any combination on any grid with
+
+```python
+from src.loader import load, fit_scaler, YieldDataset
+d = load("world/loyo/all", role="train", grid="10d",
+         features=["s2", "indices", "observed", "weather:tmean_c,prec_mm", "terrain", "soil:0-30cm", "crop"])
+d.dyn, d.static, d.y, d.meta, d.dyn_names, d.static_names, d.units, d.days
+ds = YieldDataset(d, fit_scaler(d))   # torch Dataset, z-scored, NaN -> 0
+```
+
+`04_train_v2.py` uses the loader for configs with `inputs: {features: [...], grid: 10d}`; configs with
+`inputs.dynamic` keep the old input path (`work_dir/lstm/data`, 24 × 30 days).
 
 ### 3. Train and evaluate
 
