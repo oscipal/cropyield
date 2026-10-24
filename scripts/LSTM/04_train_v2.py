@@ -31,6 +31,8 @@ from convlstm import ConvLSTMModel  # noqa: E402
 from lstm_v2 import (FeatureSpec, LSTMv2, PatchLSTM, TargetScaler, augment_batch,  # noqa: E402
                      field_balanced_mse, gather_patches, sample_per_field)
 from src.config import REPO_ROOT, load_paths, load_yaml  # noqa: E402
+from src.features import INDICES, S2_BANDS  # noqa: E402
+from src.loader import fit_scaler, load  # noqa: E402
 from src.metrics import compute_metrics  # noqa: E402
 from src.splits import load_split  # noqa: E402
 
@@ -156,6 +158,37 @@ def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run, spec=Non
     return model, history, best
 
 
+class LoaderSpec:
+    """What train_member / save_results need from FeatureSpec, for inputs from src/loader.py."""
+
+    def __init__(self, d, scaler, inputs: dict):
+        self.dyn_names, self.static_names = d.dyn_names, d.static_names
+        self.obs_index = d.dyn_names.index("observed") if "observed" in d.dyn_names else None
+        self.jitter_cols = [i for i, n in enumerate(d.dyn_names) if n in S2_BANDS or n in INDICES]
+        self.fill = 0.0
+        self.units, self.scaler, self.inputs = d.units, scaler, inputs
+
+    def state(self) -> dict:
+        sc = self.scaler
+        return {"loader": self.inputs, "dyn_names": self.dyn_names, "static_names": self.static_names,
+                "units": self.units, "dyn_mean": sc.dyn_mean.tolist(), "dyn_std": sc.dyn_std.tolist(),
+                "static_mean": sc.static_mean.tolist(), "static_std": sc.static_std.tolist()}
+
+
+def loader_inputs(split_name: str, inputs: dict, idx: dict):
+    """X[r] = (Xd float16 (n, T, F), Xs float16 (n, S)) from src/loader.py, z-scored with training statistics in
+    float32, NaN -> 0 (`observed` marks real steps). Config: inputs.features (list of specs), inputs.grid."""
+    feats, grid = inputs["features"], inputs["grid"]
+    sc = fit_scaler(split=split_name, role="train", features=feats, grid=grid)
+    X, d0 = {}, None
+    for r in (0, 1, 2):
+        d = load(split_name, ROLE_NAMES[r], feats, grid=grid, scaler=sc)
+        assert np.array_equal(d.rows, idx[r]), "loader rows differ from the split rows of meta.parquet"
+        X[r] = (torch.from_numpy(d.dyn), torch.from_numpy(d.static.astype(np.float16)))
+        d0 = d if r == 0 else d0
+    return LoaderSpec(d0, sc, inputs), X
+
+
 def prepare_split(split_name, cfg, data) -> dict:
     """Set membership, normalised inputs X[r] = (Xd, Xs), target scaling and field codes of one split
     (r = 0 train, 1 val, 2 test). Shared with 07_train_field_image.py."""
@@ -171,8 +204,11 @@ def prepare_split(split_name, cfg, data) -> dict:
           flush=True)
 
     t0 = time.time()
-    spec = FeatureSpec(cfg["inputs"], info).fit(dyn, stat, idx[0], meta)
-    X = {r: spec.transform(dyn, stat, idx[r], meta) for r in (0, 1, 2)}
+    if "features" in cfg["inputs"]:
+        spec, X = loader_inputs(split_name, cfg["inputs"], idx)
+    else:  # legacy configs: inputs.dynamic / static / indices / mask_channel / categorical on cfg["data_dir"]
+        spec = FeatureSpec(cfg["inputs"], info).fit(dyn, stat, idx[0], meta)
+        X = {r: spec.transform(dyn, stat, idx[r], meta) for r in (0, 1, 2)}
     tscaler = TargetScaler(cfg.get("target", {}).get("standardize_by")).fit(meta, idx[0])
     scal = {r: tscaler.params(meta, idx[r]) for r in (0, 1, 2)}
     y_true = {r: meta["target"].to_numpy(np.float32)[idx[r]] for r in (0, 1, 2)}
