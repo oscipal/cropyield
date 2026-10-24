@@ -1,6 +1,7 @@
 """Registry of the loader's input features: one place that says what a feature is, its unit and where it comes from.
 
-A feature list is a list of group specs, each `group` or `group:argument`:
+A feature list is a list of group specs, each `group` or `group:argument` (in YAML, quote specs with commas:
+"weather:tmean_c,prec_mm", otherwise the flow list splits them):
 
     s2                      12 Sentinel-2 bands, surface reflectance (DN / 10000)            dynamic
     s2:B04,B08              selected bands
@@ -145,7 +146,10 @@ def resolve(features: list[str], static_names: list[str], categories: dict[str, 
             cats = categories[g]
             out.append(Group(g, [f"{g}={c}" for c in cats], ["one-hot"] * len(cats), False, cats))
         else:
-            raise KeyError(f"unknown feature group {g!r}; known: {list(DYNAMIC_GROUPS + STATIC_GROUPS)}")
+            names = set(S2_BANDS) | set(INDICES) | set(WEATHER_UNITS) | set(TERRAIN_UNITS) | set(soil.PROPS)
+            hint = (f" ('{g}' is a feature name: in YAML a spec with commas must be quoted, e.g. "
+                    f"\"weather:tmean_c,prec_mm\")") if g in names else ""
+            raise KeyError(f"unknown feature group {g!r}; known: {list(DYNAMIC_GROUPS + STATIC_GROUPS)}{hint}")
     names = [n for grp in out for n in grp.names]
     dup = sorted({n for n in names if names.count(n) > 1})
     if dup:
