@@ -427,7 +427,7 @@ def family_of(config: str) -> str:
     return next((k for k, v in model_families().items() if config in v), "Other")
 
 
-@st.cache_data
+@st.cache_data(ttl=120)
 def config_info(config: str) -> dict:
     """Config file, its header comment (the screens describe their change there) and the summary description."""
     from src.config import REPO_ROOT
@@ -439,17 +439,36 @@ def config_info(config: str) -> dict:
             "screen": bool(path) and path.parent.name.endswith("_screen")}
 
 
-@st.cache_data
-def _summary_descriptions() -> dict[str, str]:
-    """Model descriptions of scripts/LSTM/10_summary.py (config -> text)."""
+def _summary_module():
+    """scripts/LSTM/10_summary.py as a module (None if it does not load; the report is optional for the viewer)."""
     import importlib.util
     try:
         spec = importlib.util.spec_from_file_location("summary10", REPO / "scripts" / "LSTM" / "10_summary.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return {cfg.strip("`"): text for _, cfg, text in mod.DESCRIPTIONS}
-    except Exception:   # the report module is optional for the viewer
-        return {}
+        return mod
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=120)
+def _summary_descriptions() -> dict[str, str]:
+    """Model descriptions of scripts/LSTM/10_summary.py (config -> text)."""
+    mod = _summary_module()
+    return {cfg.strip("`"): text for _, cfg, text in mod.DESCRIPTIONS} if mod else {}
+
+
+@st.cache_data(ttl=120)
+def results_summary() -> dict | None:
+    """The tables of docs/results_summary.md, computed live from the runs' metrics.json by 10_summary.py:
+    overview (median subset R2 per model), per split (test field R2, model columns) and the model labels."""
+    mod = _summary_module()
+    if mod is None:
+        return None
+    sp, sub, single, paper = mod.load()
+    return {"overview": mod.overview(single, paper), "splits": sp, "subsets": sub, "models": dict(mod.MODELS),
+            "scopes": dict(mod.SCOPES), "methods": dict(mod.METHODS), "pooled": tuple(mod.POOLED),
+            "dense": tuple(mod.DENSE)}
 
 
 REPO = Path(__file__).resolve().parents[1]

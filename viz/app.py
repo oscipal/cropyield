@@ -4,6 +4,9 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
+import pandas as pd
 import streamlit as st
 
 st.set_page_config(page_title="Crop yield viewer", page_icon="🌾", layout="wide")
@@ -29,8 +32,71 @@ st.markdown("""
 | **Splits** | Map of a split's train/val/test fields and their counts |
 """)
 
-st.subheader("Field-years per country and crop")
-st.dataframe(fields.pivot_table(index="country", columns="crop", values="field", aggfunc="count", fill_value=0),
-             width="stretch")
-st.subheader("Runs")
-st.dataframe(runs.groupby("config").agg(splits=("split", "size"), finished=("done", "sum")), width="stretch")
+# ---------------------------------------------------------------- results
+res = data.results_summary()
+st.header("Results")
+if res is None:
+    st.warning("scripts/LSTM/10_summary.py did not load; see the Runs page.")
+else:
+    done = runs[runs["done"]]
+    newest = max((Path(p) / "metrics.json").stat().st_mtime for p in done["path"]) if len(done) else None
+    st.caption("Test field R² (mean prediction vs. mean yield per field-year; ensembles: mean of the members), "
+               "computed live from the runs' `metrics.json` with the code of `scripts/LSTM/10_summary.py`, so it "
+               "matches `docs/results_summary.md` after that script is rerun."
+               + (f" Newest finished run: {pd.Timestamp(newest, unit='s', tz='UTC').tz_convert('Europe/Zurich'):%d.%m.%Y %H:%M}."
+                  if newest else ""))
+    models, methods = res["models"], res["methods"]
+
+    st.subheader("Overview")
+    ov = res["overview"].set_index("model")
+    ov["best in subsets"] = [f"{int(b)} / {int(n)}" if b == b else "–" for b, n in zip(ov["best"], ov["subsets"])]
+    ov = ov[[*methods, "both", "best in subsets"]].rename(columns={k: k.upper() for k in methods})
+    st.dataframe(ov.style.format("{:.2f}", subset=[k.upper() for k in methods] + ["both"], na_rep="–")
+                 .background_gradient(subset=[k.upper() for k in methods] + ["both"], cmap="RdYlGn",
+                                      vmin=-0.3, vmax=0.5)
+                 .highlight_max(subset=[k.upper() for k in methods] + ["both"], props="font-weight: bold"),
+                 width="stretch")
+    st.caption("Median over the country × crop subsets of the single-crop splits (Germany / South America). The "
+               "paper averages many held-out years / regions per subset, we evaluate one held-out set: a reference, "
+               "not the same experiment. Models trained on the pooled splits only (10-day, ConvLSTM) are below.")
+
+    st.subheader("Per split")
+    sp = res["splits"].assign(region=lambda x: x["scope"].map(res["scopes"]),
+                              crop=lambda x: x["crop"].replace({"all": "all crops"}))
+    for tab, (k, title) in zip(st.tabs(list(methods.values())), methods.items()):
+        d = sp[sp["method"] == k]
+        piv = d.pivot_table(index=["region", "crop"], columns="model", values="field_r2", aggfunc="first")
+        piv = piv[[m for m in models if m in piv]].rename(columns=models)
+        order = {r: i for i, r in enumerate(res["scopes"].values())}
+        piv = piv.iloc[sorted(range(len(piv)), key=lambda i: (order[piv.index[i][0]],
+                                                               piv.index[i][1] != "all crops", piv.index[i][1]))]
+        piv["test fields"] = d.drop_duplicates(["region", "crop"]).set_index(["region", "crop"])["n_fields"]
+        cols = [c for c in piv.columns if c != "test fields"]
+        tab.dataframe(piv.style.format("{:.2f}", subset=cols, na_rep="–")
+                      .background_gradient(subset=cols, cmap="RdYlGn", vmin=-0.3, vmax=0.9, axis=None)
+                      .highlight_max(subset=cols, axis=1, props="font-weight: bold; text-decoration: underline"),
+                      width="stretch")
+    st.caption("Whole test set of each split; the best model per row is underlined. R² on multi-crop or "
+               "multi-country splits is inflated by the yield differences between crops and countries.")
+
+    st.subheader("10-day Sentinel-2 series and ConvLSTM (pooled all-crop splits)")
+    dense = [m for m in res["dense"] if m in models]
+    sub = res["subsets"]
+    d = sub[sub["model"].isin(dense) & sub["crop"].eq("all") & sub["scope"].isin(res["pooled"])]
+    if len(d):
+        med = d.groupby(["scope", "method", "model"])["field_r2"].median().unstack("model")
+        med = med[[m for m in dense if m in med]].rename(columns=models)
+        med.index = [f"{s}/{k}/all" for s, k in med.index]
+        piv = d.pivot_table(index=["scope", "method", "subset"], columns="model", values="field_r2")
+        med.loc["all subsets"] = piv.median().rename(models)
+        st.dataframe(med.style.format("{:.2f}", na_rep="–")
+                     .background_gradient(cmap="RdYlGn", vmin=-0.3, vmax=0.9, axis=None)
+                     .highlight_max(axis=1, props="font-weight: bold; text-decoration: underline"), width="stretch")
+        st.caption(f"Median test field R² over the country × crop subsets of each pooled split "
+                   f"({piv.index.nunique()} subsets in all). Patch LSTM v3 → (10-day) is the gain from the denser "
+                   f"series, (10-day) → ConvLSTM the gain from the model.")
+
+with st.expander("Inventory: field-years per country × crop, runs per config"):
+    st.dataframe(fields.pivot_table(index="country", columns="crop", values="field", aggfunc="count", fill_value=0),
+                 width="stretch")
+    st.dataframe(runs.groupby("config").agg(splits=("split", "size"), finished=("done", "sum")), width="stretch")
