@@ -529,3 +529,93 @@ def split_membership() -> pd.DataFrame:
         t, _ = split_table(g.scope, g.method, g.crop)
         rows.append(pd.DataFrame({"field": t["field"], "split": f"{g.scope}/{g.method}/{g.crop}", "set": t["set"]}))
     return pd.concat(rows, ignore_index=True)
+
+
+# --------------------------------------------------------------------------- results explorer (pages/6_Results.py)
+
+def architecture(config: str) -> str:
+    """Model architecture of a run, from its config (model.type); groups the setups on the Results page."""
+    import yaml
+    if config in ("mean", "mean_crop_country"):
+        return "Baselines"
+    if config.startswith("field_image"):
+        return "Field image"
+    path = config_paths().get(config)
+    cfg = yaml.safe_load(path.read_text()) if path else {}
+    kind = ((cfg or {}).get("model") or {}).get("type")
+    if kind is None:
+        fam = family_of(config)
+        kind = "convlstm" if "ConvLSTM" in fam else "patch" if "Patch" in fam else "lstm"
+    return {"convlstm": "ConvLSTM", "patch": "Patch LSTM"}.get(kind, "LSTM (pixel)")
+
+
+@st.cache_data(ttl=120)
+def results_long() -> pd.DataFrame:
+    """One row per run x score kind x set x group ("all" or "Country|crop"). kind "ensemble" = the run's ensemble,
+    "single" = mean of the members' metrics (comparable between 2- and 5-member runs; = ensemble for one member)."""
+    rows = []
+    for r in list_runs().query("done").itertuples():
+        f = Path(r.path) / "metrics.json"
+        m = json.loads(f.read_text())
+        n_members = len(m.get("members") or []) or 1
+        for kind, src in (("ensemble", m["metrics"]), ("single", m.get("metrics_member_mean") or m["metrics"])):
+            for role, groups in src.items():
+                for g, vals in groups.items():
+                    country, _, crop = g.partition("|")
+                    rows.append({"config": r.config, "split": r.split, "scope": r.scope, "method": r.method,
+                                 "split_crop": r.crop, "kind": kind, "set": role, "group": g,
+                                 "country": country if crop else None, "crop": crop or None,
+                                 "n_members": n_members, "finished": f.stat().st_mtime,
+                                 **{k: vals.get(k) for k in ("field_r2", "field_rmse", "pixel_r2", "pixel_rmse",
+                                                              "n_fields", "n_pixels")}})
+    d = pd.DataFrame(rows)
+    if d.empty:
+        return d
+    key = ["config", "split", "set", "group"]          # the member means carry no counts: take the ensemble's
+    n = d[d["kind"] == "ensemble"].set_index(key)[["n_fields", "n_pixels"]]
+    single = d["kind"] == "single"
+    for c in ("n_fields", "n_pixels"):
+        d.loc[single, c] = d.loc[single, key].merge(n[c], left_on=key, right_index=True, how="left")[c].to_numpy()
+    return d
+
+
+@st.cache_data(ttl=120)
+def setups() -> pd.DataFrame:
+    """Every finished config with architecture, experiment (menu family), date of its first finished split and
+    description, in the order the setups were tried."""
+    r = results_long()
+    if r.empty:
+        return pd.DataFrame()
+    s = r.groupby("config").agg(first=("finished", "min"), last=("finished", "max"), splits=("split", "nunique"),
+                                n_members=("n_members", "max")).reset_index()
+    import yaml
+    planned = []
+    for c, n in zip(s["config"], s["splits"]):
+        p = config_paths().get(c)
+        sp = ((yaml.safe_load(p.read_text()) or {}).get("splits") if p else None) or []
+        planned.append(max(len(sp), n))
+    s["planned"] = planned
+    s["complete"] = s["splits"] >= s["planned"]                  # False while a run is still going
+    s["architecture"] = [architecture(c) for c in s["config"]]
+    s["experiment"] = [family_of(c) for c in s["config"]]
+    s["desc"] = [config_info(c)["desc"] or config_info(c)["header"] for c in s["config"]]
+    return s.sort_values("first").reset_index(drop=True)
+
+
+def flat_config(config: str) -> dict[str, str]:
+    """The run's config as flat `section.key: value` strings (name, wandb and comments left out), for diffs."""
+    import yaml
+    path = config_paths().get(config)
+    if not path:
+        return {}
+    out = {}
+
+    def walk(d, pre=""):
+        for k, v in d.items():
+            key = f"{pre}{k}"
+            if isinstance(v, dict) and v and k != "augment":
+                walk(v, key + ".")
+            else:
+                out[key] = json.dumps(v) if isinstance(v, (list, dict)) else str(v)
+    walk({k: v for k, v in (yaml.safe_load(path.read_text()) or {}).items() if k not in ("name", "wandb")})
+    return out

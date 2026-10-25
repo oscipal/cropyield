@@ -30,6 +30,7 @@ st.markdown("""
 | **Runs** | Test/val metrics of every config × split, per-country×crop breakdown, training curves |
 | **Predictions** | Target vs prediction vs error maps per field, ensemble spread, field-level scatter |
 | **Splits** | Map of a split's train/val/test fields and their counts |
+| **Results** | Pick a model, step through every setup tried for it, the score over the setups (click a point to open a setup and what changed), a table per region / method / country / crop with filters |
 | **Configure run** | Start from an existing model, choose inputs, time axis, training pixels, model size and splits; check on a few pixels and save a config to `configs/custom/` |
 """)
 
