@@ -48,27 +48,17 @@ else:
                   if newest else ""))
     models, methods = res["models"], res["methods"]
 
-    st.subheader("Overview")
-    ov = res["overview"].set_index("model")
-    ov["best in subsets"] = [f"{int(b)} / {int(n)}" if b == b else "–" for b, n in zip(ov["best"], ov["subsets"])]
-    ov = ov[[*methods, "both", "best in subsets"]].rename(columns={k: k.upper() for k in methods})
-    st.dataframe(ov.style.format("{:.2f}", subset=[k.upper() for k in methods] + ["both"], na_rep="–")
-                 .background_gradient(subset=[k.upper() for k in methods] + ["both"], cmap="RdYlGn",
-                                      vmin=-0.3, vmax=0.5)
-                 .highlight_max(subset=[k.upper() for k in methods] + ["both"], props="font-weight: bold"),
-                 width="stretch")
-    st.caption("Median over the country × crop subsets of the single-crop splits (Germany / South America). The "
-               "paper averages many held-out years / regions per subset, we evaluate one held-out set: a reference, "
-               "not the same experiment. Models trained on the pooled splits only (10-day, ConvLSTM) are below.")
-
+    # The overview of 10_summary.py is a median over the crop-specific splits, which are not shown (user decision
+    # 2026-10-25): only the pooled all-crop splits below.
     st.subheader("Per split")
-    sp = res["splits"].assign(region=lambda x: x["scope"].map(res["scopes"]),
-                              crop=lambda x: x["crop"].replace({"all": "all crops"}))
+    sp = res["splits"]
+    sp = sp[sp["crop"].eq("all") & sp["scope"].isin(data.SHOWN_SCOPES)].assign(
+        region=lambda x: x["scope"].map(data.SCOPE_LABELS), crop="all crops")
     for tab, (k, title) in zip(st.tabs(list(methods.values())), methods.items()):
         d = sp[sp["method"] == k]
         piv = d.pivot_table(index=["region", "crop"], columns="model", values="field_r2", aggfunc="first")
         piv = piv[[m for m in models if m in piv]].rename(columns=models)
-        order = {r: i for i, r in enumerate(res["scopes"].values())}
+        order = {r: i for i, r in enumerate(data.SCOPE_LABELS.values())}
         piv = piv.iloc[sorted(range(len(piv)), key=lambda i: (order[piv.index[i][0]],
                                                                piv.index[i][1] != "all crops", piv.index[i][1]))]
         piv["test fields"] = d.drop_duplicates(["region", "crop"]).set_index(["region", "crop"])["n_fields"]
@@ -77,8 +67,10 @@ else:
                       .background_gradient(subset=cols, cmap="RdYlGn", vmin=-0.3, vmax=0.9, axis=None)
                       .highlight_max(subset=cols, axis=1, props="font-weight: bold; text-decoration: underline"),
                       width="stretch")
-    st.caption("Whole test set of each split; the best model per row is underlined. R² on multi-crop or "
-               "multi-country splits is inflated by the yield differences between crops and countries.")
+    st.caption("Whole test set of each pooled all-crop split (crop-specific splits are not shown); the best model "
+               "per row is underlined. R² on multi-crop or multi-country splits is inflated by the yield differences "
+               "between crops and countries. Europe (old) = Germany only, the Europe of the split suite before "
+               "Switzerland was added; models run before that have only those rows.")
 
     st.subheader("10-day Sentinel-2 series and ConvLSTM (pooled all-crop splits)")
     dense = [m for m in res["dense"] if m in models]

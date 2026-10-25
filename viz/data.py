@@ -137,13 +137,22 @@ def _parse_split(name: str) -> tuple[str, str, str]:
     return scope, method, crop
 
 
+# Only the pooled all-crop splits are shown (user decision 2026-10-25): World, Europe, South America x LOYO / LORO;
+# germany/*/all is the old Europe (before Switzerland). Crop-specific splits (*/loyo/wheat, ...) never appear.
+SHOWN_SCOPES = ("world", "europe", "south_america", "germany")
+SCOPE_LABELS = {"world": "World", "europe": "Europe", "south_america": "South America",
+                "germany": "Europe (old: Germany only)"}
+
+
 @st.cache_data(ttl=120)
 def list_runs() -> pd.DataFrame:
-    """Every <config>/<scope>__<method>__<crop> folder, finished (metrics.json) or not."""
+    """Every <config>/<scope>__<method>__all folder of a shown scope, finished (metrics.json) or not."""
     rows = []
     for cfg in sorted(p for p in RUNS.iterdir() if p.is_dir() and not p.name.startswith("_")):
         for d in sorted(p for p in cfg.iterdir() if p.is_dir() and p.name.count("__") == 2):
             scope, method, crop = _parse_split(d.name)
+            if crop != "all" or scope not in SHOWN_SCOPES:
+                continue
             rows.append({"config": cfg.name, "split": f"{scope}/{method}/{crop}", "scope": scope, "method": method,
                          "crop": crop, "path": str(d), "done": (d / "metrics.json").exists(),
                          "has_val": (d / "preds_val.parquet").exists(),
