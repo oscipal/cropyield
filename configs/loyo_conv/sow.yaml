@@ -1,0 +1,42 @@
+# LOYO screening (.claude/plans/loyo_conv.md): as ref.yaml, but the time axis starts at each field-year's sowing
+# date (align: sowing, 36 steps of 10 days = days 0..360 after sowing) instead of the calendar.
+name: loyo_sow
+seed: 42
+
+inputs:
+  features: [s2, indices, observed, crop, country]
+  grid: 10d
+  align: sowing
+
+target:
+  standardize_by: [crop, country]    # z-score yield per group (train stats)
+
+splits: [europe/loyo/all, south_america/loyo/all]
+
+model:
+  type: convlstm          # LSTM gates = 3 x 3 convolutions over the 5 x 5 neighbourhood
+  patch_size: 5
+  hidden_channels: 32
+  num_layers: 1
+  kernel_size: 3
+  head_size: 128
+  dropout: 0.2
+
+train:
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  batch_size: 1024
+  pixels_per_field: 500
+  max_epochs: 100
+  patience: 10             # on field-balanced val MSE (t/ha)
+  eval_batch_size: 4096
+  gpu_data_max_gb: 2.0
+  augment: {time_shift: 3, step_dropout: 0.1}   # 3 steps = 30 days
+
+ensemble:
+  n_members: 2
+
+wandb:
+  project: yieldsat
+  entity: null
+  mode: disabled
