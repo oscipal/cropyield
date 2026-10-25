@@ -63,7 +63,9 @@ DROPPED = ("Tried and not kept: a field-image model (temporal encoder + U-Net ov
            "patch LSTM (no gain on val in a 2-member screening). Time augmentation was the only change that "
            "helped on val (median subset field R² 0.33 vs 0.08), so it became Patch LSTM v3. ConvLSTM variants "
            "(9 × 9 patch, 64 channels, 2 layers) and 15/30-day time series were screened on val and not kept "
-           "(`docs/convlstm_screening.md`).")
+           "(`docs/convlstm_screening.md`). The rebuilt weather (rainfall, GDD per 10-day window), soil 0–30 cm "
+           "and recomputed terrain also did not help a small pixel LSTM on the 10-day series (median val subset "
+           "field R² 0.02 vs 0.28 with S2 only, 2 members; `docs/inputs_quick_screening.md`).")
 METHODS = {"loyo": "LOYO (leave one year out)", "loro": "LORO (leave one region out)"}
 SCOPES = {"germany": "Germany", "europe": "Europe", "south_america": "South America", "world": "World"}
 DUPLICATES = {("world", "corn"), ("world", "rapeseed"), ("world", "soybean")}
