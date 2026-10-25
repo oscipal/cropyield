@@ -14,7 +14,7 @@ The repository contains
 3. **LSTM v2**, the paper LSTM with extra inputs, per-crop target scaling, field-balanced training,
    regularisation and a 5-member Deep Ensemble.
 
-Results: `docs/results_summary.md` (all models, short), full tables in `docs/results_convlstm.md` (current split suite) and `docs/results_lstm.md` (old suite, before Switzerland); also on the visualizer's homepage.
+Results: `docs/results_summary.md` (all models, short), full tables in `docs/results_convlstm.md` (current split suite), `docs/results_inputs_quick.md` (quick input test with the new loader) and `docs/results_lstm.md` (old suite, before Switzerland); also on the visualizer's homepage.
 
 ## Setup
 
@@ -38,12 +38,16 @@ configs/
   lstm_s2.yaml            paper LSTM, Sentinel-2 only
   lstm_s2_adm.yaml        paper LSTM, S2 + weather, soil, topography (input fusion)
   lstm_v2_s2.yaml         LSTM v2, Sentinel-2 only
+  inputs_quick/           small pixel LSTM via src/loader.py: quick_s2 (S2 only), quick_all (+ weather, soil, terrain)
+  loyo_conv/              LOYO screening of the ConvLSTM (time axis, LAI, ERA5-Land soil water; .claude/plans/loyo_conv.md)
   field_image_s2.yaml     field-image model (temporal encoder + U-Net over the whole field)
 scripts/
   05_build_field_table.py one row per field-year (physical fields, regions)
   06_make_split_suite.py  builds the 24 splits
   07_split_report.py      writes docs/splits.md
   check_loader.py         src/loader.py against the old input pipeline and the source files
+  check_lai.py            src/lai.py against the reference SNAP LAI script, plausibility, angle sensitivity
+  loyo_diagnosis.py       read-only diagnosis of the LOYO val errors and the data behind them -> docs/loyo_diagnosis.md
   features_doc.py         writes docs/features.md from src/features.py
   LSTM/
     01_extract.py         NetCDF -> memmaps for training (once)
@@ -55,24 +59,28 @@ scripts/
     07_train_field_image.py  field-image model, one ensemble per split (inputs and outputs as 04)
     field_image.py        field images from the pixel memmaps, crops, tiles, encoder + U-Net
     check_field_image.py  data alignment and shape checks (--gpu: memory of a training step)
-    convlstm.py           ConvLSTM model (gates = convolutions over the pixel's neighbourhood)
+    convlstm.py           ConvLSTM model (gates = convolutions over the pixel's neighbourhood; optional late GRU branch)
     check_convlstm.py     ConvLSTM shape / gradient checks
     11_build_s2_grid.py   Sentinel-2 cubes on 30 / 15 / 10-day windows from the raw scenes -> lstm/data_w<days>/
     12_scene_availability.py  per field x window: scenes, valid share, cause of gaps -> docs/scene_availability.md
     13_build_weather_grid.py  ERA5 weather per field on the S2 time grids (degC, mm, GDD, ...) -> lstm/<grid>/weather.npy
     14_build_terrain.py   elevation, slope, aspect, curvature recomputed from the raw DEM -> lstm/terrain.npy
+    15_download_era5land.py  ERA5-Land soil water + weather per 0.1 deg cell, 1995-2024, from the CDS -> era5land/
+    16_build_era5land_grid.py  ERA5-Land on the S2 time grids, with anomalies vs 1995-2015 -> lstm/<grid>/era5land.npy
     paper_lstm_results.yaml   the paper's LSTM results (appendix Tab. 13–18)
 src/
   config.py               loads configs/paths.yaml
   loader.py               load(): pick features and time grid, get arrays; fit_scaler, YieldDataset (torch)
   features.py             registry of the loader's features (groups, units, sources, known issues)
   soil.py                 SoilGrids soil in physical units, depth selection
+  lai.py                  leaf area index from S2 reflectances (SNAP / S2ToolBox biophysical network)
   data.py                 opening the NetCDF files, decoded pixel metadata
   metrics.py              field- and pixel-level R² and RMSE
   splits.py               load_split()
   season.py               sowing / harvest dates of a field-year on the cube's day axis
   splitting.py            split construction and scoring (used by 06/07)
-viz/                      browser visualizer (Streamlit): fields + inputs, runs, predictions, splits, configure run
+viz/                      browser visualizer (Streamlit): fields + inputs, runs, predictions, splits, results explorer,
+                          configure run
                           (writes configs/custom/<name>.yaml for 04_train_v2.py; never starts training)
   run.sh                  starts it on 127.0.0.1:8501 (builds viz/build_index.py outputs on first start)
 docs/
@@ -80,10 +88,17 @@ docs/
   results_convlstm.md     full tables on the current split suite, ConvLSTM and 10-day S2 series
   results_lstm.md         full tables on the old split suite (before Switzerland), compared with the paper
   convlstm_screening.md   val-only screening of the ConvLSTM variants
+  results_inputs_quick.md full tables of the quick input test (S2 only vs. + weather, soil, terrain)
+  inputs_quick_screening.md  val-only screening of the quick input test
+  loyo_conv_screening.md  val-only LOYO screening of the ConvLSTM (time axis, LAI, ERA5-Land soil water)
+  loyo_diagnosis.md       where the LOYO error comes from (level / scale / ranking), year structure, S2 coverage, sowing dates, seen vs new fields, edge pixels
   features.md             every loader feature: unit, source, known issues, coverage per country
   scene_availability.md   Sentinel-2 scene availability per window (scripts/LSTM/12_scene_availability.py)
   splits.md               dataset statistics and every split
+  literature_review.md    best practices from the two reviews in docs/ and ~45 papers they cite (models, inputs,
+                          validation) and what they suggest for this project
   Yieldsat.pdf            the YieldSAT paper
+  agronomy-14-02264.pdf, PIIS2405844024168673.pdf   the two reviews (Wang et al. 2024; Jabed & Azmi Murad 2024)
 ```
 
 ## Visualizer
