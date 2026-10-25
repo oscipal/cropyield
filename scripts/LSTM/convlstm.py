@@ -32,22 +32,43 @@ class ConvLSTMModel(nn.Module):
     the last step is summarised as centre + mean over the neighbours present, plus the static inputs, and goes
     through the head of LSTMv2 (FC -> BN -> ReLU -> Dropout -> FC 1).
 
-    Input xd (B, K=k*k, T, C) from gather_patches (last channel = neighbour present), xs (B, S)."""
+    Input xd (B, K=k*k, T, C) from gather_patches (last channel = neighbour present), xs (B, S).
+
+    late_cols: dynamic channels that are one value per field (e.g. ERA5-Land) and bypass the ConvLSTM: the centre
+    pixel's series of them goes through a small GRU (late_hidden units), whose last state joins the head inputs
+    (late fusion). late_dropout: during training the whole branch output is zeroed per sample with this
+    probability (modality dropout), so the model cannot lean on it alone."""
 
     def __init__(self, n_dyn: int, n_static: int, k: int = 5, hidden_channels: int = 32, num_layers: int = 1,
-                 kernel_size: int = 3, head_size: int = 128, dropout: float = 0.0):
+                 kernel_size: int = 3, head_size: int = 128, dropout: float = 0.0, late_cols: list[int] | None = None,
+                 late_hidden: int = 16, late_dropout: float = 0.0):
         super().__init__()
         self.k = k
-        c = n_dyn + 1  # + neighbour-present channel
+        late = sorted(late_cols or [])
+        self.register_buffer("late_idx", torch.tensor(late, dtype=torch.long), persistent=False)
+        self.register_buffer("conv_idx", torch.tensor([i for i in range(n_dyn + 1) if i not in late],
+                                                      dtype=torch.long), persistent=False)
+        self.late_dropout = late_dropout
+        self.late = nn.GRU(len(late), late_hidden, batch_first=True) if late else None
+        c = n_dyn + 1 - len(late)  # + neighbour-present channel
         self.cells = nn.ModuleList(
             ConvLSTMCell(c if i == 0 else hidden_channels, hidden_channels, kernel_size) for i in range(num_layers))
         self.drop = nn.Dropout(dropout)
-        n = 2 * hidden_channels + n_static
+        n = 2 * hidden_channels + n_static + (late_hidden if late else 0)
         self.head = nn.Sequential(nn.Linear(n, head_size), nn.BatchNorm1d(head_size), nn.ReLU(),
                                   nn.Dropout(dropout), nn.Linear(head_size, 1))
 
     def forward(self, xd: torch.Tensor, xs: torch.Tensor | None = None) -> torch.Tensor:
-        B, K, T, C = xd.shape
+        B, K, T, _ = xd.shape
+        late = None
+        if self.late is not None:
+            _, hn = self.late(xd[:, K // 2][..., self.late_idx])          # centre pixel (B, T, L)
+            late = hn[-1]
+            if self.training and self.late_dropout > 0:             # inverted, like nn.Dropout
+                keep = (torch.rand(B, 1, device=xd.device) >= self.late_dropout).to(late.dtype)
+                late = late * keep / max(1.0 - self.late_dropout, 1e-6)
+            xd = xd[..., self.conv_idx]
+        C = xd.shape[-1]
         seq = xd.permute(0, 2, 3, 1).reshape(B, T, C, self.k, self.k)   # (B, T, C, k, k)
         present = seq[:, 0, -1:]                                         # (B, 1, k, k), same at every step
         for li, cell in enumerate(self.cells):
@@ -63,4 +84,5 @@ class ConvLSTMModel(nn.Module):
         centre = h[:, :, self.k // 2, self.k // 2]
         mean = (h * present).sum((2, 3)) / present.sum((2, 3)).clamp(min=1)
         feats = [centre, mean] + ([xs] if xs is not None and xs.shape[-1] > 0 else [])
+        feats += [late] if late is not None else []
         return self.head(torch.cat(feats, dim=-1)).squeeze(-1)

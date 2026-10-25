@@ -73,14 +73,22 @@ def predict(model, inputs, batch_size, device) -> np.ndarray:
     return torch.cat(out).numpy()
 
 
-def build_model(cfg: dict, n_dyn: int, n_static: int) -> torch.nn.Module:
+def build_model(cfg: dict, n_dyn: int, n_static: int, dyn_names: list[str] | None = None) -> torch.nn.Module:
     mc = cfg["model"]
+    late = mc.get("late_features") or []          # convlstm only: dynamic inputs fused late (per-field series)
+    if late and mc.get("type") != "convlstm":
+        raise ValueError("model.late_features needs model.type: convlstm")
     if mc.get("type", "lstm") == "patch":
         return PatchLSTM(n_dyn, n_static, mc["patch_size"], mc["conv_channels"], mc["hidden_size"],
                          mc["num_layers"], mc["head_size"], mc.get("dropout", 0.0))
     if mc.get("type", "lstm") == "convlstm":
+        missing = [n for n in late if n not in (dyn_names or [])]
+        if missing:
+            raise KeyError(f"model.late_features {missing} are not dynamic inputs; inputs: {dyn_names}")
         return ConvLSTMModel(n_dyn, n_static, mc["patch_size"], mc["hidden_channels"], mc["num_layers"],
-                             mc["kernel_size"], mc["head_size"], mc.get("dropout", 0.0))
+                             mc["kernel_size"], mc["head_size"], mc.get("dropout", 0.0),
+                             [dyn_names.index(n) for n in late], mc.get("late_hidden", 16),
+                             mc.get("late_dropout", 0.0))
     return LSTMv2(n_dyn + n_static, mc["hidden_size"], mc["num_layers"], mc["head_size"], mc.get("dropout", 0.0))
 
 
@@ -109,7 +117,7 @@ def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run, spec=Non
     seed = cfg["seed"] + 1000 * member
     set_seed(seed)
     rng = np.random.default_rng(seed)
-    model = build_model(cfg, X[0][0].shape[-1], X[0][1].shape[-1]).to(device)
+    model = build_model(cfg, X[0][0].shape[-1], X[0][1].shape[-1], getattr(spec, "dyn_names", None)).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=tc["lr"], weight_decay=tc.get("weight_decay", 0.0))
     loss_fn = torch.nn.MSELoss()
     y_tr = torch.from_numpy(y_z)

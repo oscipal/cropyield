@@ -66,6 +66,36 @@ def check_model(k: int) -> None:
             assert n_par < 200_000, n_par
 
 
+def check_late() -> None:
+    """late_cols: the branch sees only the centre pixel's late channels, the ConvLSTM never sees them, gradients
+    reach the GRU, modality dropout 1.0 removes the branch's effect in training mode."""
+    torch.manual_seed(0)
+    late = [12, 13, 14]
+    model = ConvLSTMModel(F, S, k=5, late_cols=late, late_hidden=8, late_dropout=0.0)
+    xd, xs = make(5)
+    model.train()
+    y = model(xd, xs)
+    y.pow(2).mean().backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters())
+    assert model.cells[0].conv.in_channels == F + 1 - len(late) + 32
+    model.eval()
+    base = model(xd, xs)
+    x2 = xd.clone()
+    x2[:, :12, :, late] += 5.0                  # change the late channels of the non-centre pixels only
+    assert torch.allclose(model(x2, xs), base, atol=1e-5), "late branch must read the centre pixel only"
+    x3 = xd.clone()
+    x3[:, 12, :, late] += 5.0                   # centre pixel's late channels: the output must change
+    assert not torch.allclose(model(x3, xs), base, atol=1e-4)
+    model.late_dropout = 1.0
+    model.train()
+    torch.manual_seed(1)
+    a = model(xd, xs)
+    torch.manual_seed(1)
+    b = model(x3, xs)
+    assert torch.allclose(a, b, atol=1e-5), "late_dropout 1 must switch the branch off"
+    print(f"late fusion: ok, {sum(p.numel() for p in model.parameters()):,} parameters")
+
+
 def check_augment_drop_cols() -> None:
     """step_dropout with drop_cols leaves the other channels alone; without drop_cols the old behaviour."""
     from lstm_v2 import augment_batch
@@ -88,4 +118,5 @@ if __name__ == "__main__":
     check_cell_equals_lstmcell()
     check_model(5)
     check_model(9)
+    check_late()
     check_augment_drop_cols()
