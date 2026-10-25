@@ -54,6 +54,7 @@ import numpy as np
 import pandas as pd
 
 from src import features as F
+from src import lai
 from src import soil
 from src.config import country_dirs, load_paths
 from src.season import read_season
@@ -126,6 +127,20 @@ def seasons() -> pd.DataFrame:
     t = pd.DataFrame(rows).set_index("field")
     t.to_parquet(path)
     return t
+
+
+def field_latitudes() -> pd.Series:
+    """Latitude (deg) of every field-year's outline centroid (`<work_dir>/field_shapes.gpkg`), for the sun angle
+    of the LAI network; cached in <work_dir>/lstm/field_lat.parquet."""
+    path = _base()["work"] / "field_lat.parquet"
+    if path.exists():
+        return pd.read_parquet(path)["lat"]
+    import geopandas as gpd
+    g = gpd.read_file(load_paths()["work_dir"] / "field_shapes.gpkg", layer="all")
+    lat = pd.Series(g.geometry.to_crs(3857).centroid.to_crs(4326).y.to_numpy(), index=g["field"].to_numpy(),
+                    name="lat")
+    lat.to_frame().to_parquet(path)
+    return lat
 
 
 # --------------------------------------------------------------------------- pixel selection
@@ -335,13 +350,19 @@ def _dyn_blocks(plan: dict, dyn_g: list, rows: np.ndarray):
     field = plan["meta_all"]["field"].to_numpy()[rows]
     k0 = _origin_window(plan, field)
     s2_mm = np.load(gdir / "dyn.npy", mmap_mode="r")
-    if any(g.group == "weather" for g in dyn_g):
-        wj = json.loads((gdir / "weather.json").read_text())
-        assert (wj["start_day"], wj["window_days"], wj["n_times"]) == (plan["start"], wd, T), "weather grid != S2"
-        wx = np.load(gdir / "weather.npy")
-        pos = {f: i for i, f in enumerate(wj["fields"])}
-        wfield = pd.Series(field).map(pos).to_numpy()
-        wcol = {f: i for i, f in enumerate(wj["features"])}
+    per_field = {}                      # per-field-year sources on the grid: group -> (array, row per pixel, columns)
+    for src in ("weather", "era5land"):
+        if any(g.group == src for g in dyn_g):
+            wj = json.loads((gdir / f"{src}.json").read_text())
+            assert (wj["start_day"], wj["window_days"], wj["n_times"]) == (plan["start"], wd, T), f"{src} grid != S2"
+            pos = {f: i for i, f in enumerate(wj["fields"])}
+            per_field[src] = (np.load(gdir / f"{src}.npy"), pd.Series(field).map(pos).to_numpy(),
+                              {f: i for i, f in enumerate(wj["features"])})
+    if any(g.group == "lai" for g in dyn_g):
+        lai_bands = [F.S2_BANDS.index(b) for b in lai.BANDS]
+        doy = (plan["start"] + (np.arange(T) + 0.5) * wd) % 365.25            # window centre, day 0 = 1 January
+        lat = field_latitudes().reindex(field).to_numpy()
+        cos_sz = lai.cos_sun_zenith(lat[:, None], doy[None, :]).astype(np.float32)   # (rows, T_grid)
     obs_cols = []
     for a in range(0, len(rows), BLOCK):
         raw = np.asarray(s2_mm[rows[a:a + BLOCK]])
@@ -360,8 +381,11 @@ def _dyn_blocks(plan: dict, dyn_g: list, rows: np.ndarray):
             elif g.group == "observed":
                 obs_cols = [c]
                 parts.append(np.isfinite(refl[..., 3:4]).astype(np.float32))   # B04
-            elif g.group == "weather":
+            elif g.group in per_field:
+                wx, wfield, wcol = per_field[g.group]
                 parts.append(wx[wfield[a:a + BLOCK]][..., [wcol[n] for n in g.arg]].astype(np.float32))
+            elif g.group == "lai":
+                parts.append(lai.snap_lai(refl, lai_bands, cos_sz[a:a + BLOCK])[..., None])
             c += len(g.names)
         x = np.concatenate(parts, axis=-1)                                   # (b, T_grid, F)
         src = k0[a:a + BLOCK, None] + steps[None, :]                         # (b, steps) grid window per step

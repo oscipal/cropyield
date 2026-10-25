@@ -7,8 +7,11 @@ A feature list is a list of group specs, each `group` or `group:argument` (in YA
     s2:B04,B08              selected bands
     indices                 ndvi, ndre, ndmi from the reflectances; indices:ndvi           dynamic
     observed                1 where the pixel has a clear S2 observation in the window      dynamic
+    lai                     leaf area index (m2 m-2), SNAP S2 network on the reflectances (src/lai.py)  dynamic
     weather                 default weather set (WEATHER_DEFAULT); weather:tmean_c,prec_mm;  dynamic, per field
                             weather:all
+    era5land                ERA5-Land soil water (ERA5LAND_DEFAULT), era5land:all, era5land:swvl_rz,tp_anom_mm;
+                            names prefixed e5_                                              dynamic, per field
     terrain                 6 terrain features (scripts/LSTM/14_build_terrain.py); terrain:slope,elevation
     soil                    8 SoilGrids properties 0-30 cm in physical units; soil:<spec> (src/soil.py)
     coords                  coord_x / y / z as delivered (location; encoding undocumented; leaks the region under LORO)
@@ -32,6 +35,11 @@ WEATHER_DEFAULT = ["tmean_c", "tmax_c", "tmin_c", "prec_mm", "gdd", "gdd_cum", "
                    "heat_days"]
 TERRAIN_UNITS = {"elevation": "m", "rel_elevation": "m", "slope": "deg", "aspect_sin": "-1..1 (east +)",
                  "aspect_cos": "-1..1 (north +)", "curvature": "1/km (convex +)"}
+ERA5LAND_UNITS = {"swvl1": "m3 m-3", "swvl2": "m3 m-3", "swvl3": "m3 m-3", "swvl_rz": "m3 m-3",
+                  "swvl1_anom": "m3 m-3", "swvl_rz_anom": "m3 m-3", "t2m_c": "degC", "tmax_c": "degC", "tp_mm": "mm",
+                  "ssrd_mj": "MJ m-2 d-1", "vpd_kpa": "kPa", "t2m_anom_c": "degC", "tp_anom_mm": "mm",
+                  "vpd_anom_kpa": "kPa"}
+ERA5LAND_DEFAULT = ["swvl1", "swvl2", "swvl3", "swvl_rz", "swvl1_anom", "swvl_rz_anom"]   # soil water only
 COORDS = ["coord_x", "coord_y", "coord_z"]
 
 # group -> (source, what it is, known issues); used by scripts/features_doc.py for docs/features.md
@@ -47,6 +55,14 @@ GROUP_DOCS = {
                 "B11); clipped to [-1, 1].", "NaN where the S2 bands are NaN."),
     "observed": ("computed by the loader", "1 where the pixel has a clear S2 observation in the window, else 0.",
                  "Never NaN; models should get it whenever NaN inputs are filled."),
+    "lai": ("computed by the loader from the reflectances, `src/lai.py`",
+            "Leaf area index (green leaf area per ground area) from the ESA S2ToolBox / SNAP biophysical processor "
+            "network (Weiss & Baret 2016; 8 bands B03-B12 + sun / view angle cosines). Sun zenith from the window "
+            "centre date and the field latitude at 10:30 solar time; view zenith 5°, relative azimuth cos 0 "
+            "(angles are not in the data). Clipped to [0, 8].",
+            "NaN where the S2 bands are NaN. A fixed function of the bands, so it adds no new information, only a "
+            "physical scale; the assumed angles move it by < 0.03 (median, `scripts/check_lai.py`). The network "
+            "was trained on PROSAIL simulations, absolute values for a given crop may be biased."),
     "weather": ("`<work>/lstm/data_w<days>/weather.npy`, `scripts/LSTM/13_build_weather_grid.py` from the daily "
                 "ERA5 CSVs", "Daily ERA5 aggregated over the same calendar windows as S2: means of temperature, "
                 "sums of precipitation and GDD (sum of max(0, Tmean - Tbase), Tbase 0 °C for wheat / winter "
@@ -57,6 +73,18 @@ GROUP_DOCS = {
                 "sowing. rh_mean, srad, vpd_kpa are missing for all Brazilian and most Argentine fields (not in "
                 "the default set). Replaces the delivered weather bands, which were sums between selected scenes "
                 "in K and m (mostly the gap length)."),
+    "era5land": ("`<work>/lstm/data_w<days>/era5land.npy`, `scripts/LSTM/16_build_era5land_grid.py` from the "
+                 "ERA5-Land point time series (`scripts/LSTM/15_download_era5land.py`, CDS "
+                 "`reanalysis-era5-land-timeseries`, 1995-2024)",
+                 "ERA5-Land (~9 km) at the grid point nearest to the field centroid, on the S2 windows: volumetric "
+                 "soil water of layers 0-7 / 7-28 / 28-100 cm and 0-100 cm (`swvl_rz`), 2 m temperature, "
+                 "precipitation, solar radiation, VPD; `*_anom` = minus the cell's 1995-2015 climatology of the "
+                 "same calendar days (31-day smoothed). Names get the prefix `e5_` (e.g. `e5_swvl1`). Default: the "
+                 "6 soil-water features; `era5land:all` for everything. One value per field, the same for all its "
+                 "pixels.",
+                 "A model-based reanalysis, not a measurement: one cell covers several fields. Like all per-field-"
+                 "year inputs it can act as a year / place identifier (docs/inputs_quick_screening.md); the "
+                 "anomalies are meant to reduce that. Climatology ends 2015, before the first harvest year."),
     "terrain": ("`<work>/lstm/terrain.npy`, `scripts/LSTM/14_build_terrain.py` from the raw `dem/dem-*.tif`",
                 "Elevation from the raw SRTM DEM; slope, aspect and curvature from a Gaussian-weighted local "
                 "quadratic fit (σ 1.5 px ≈ 30 m) per pixel; rel_elevation = elevation minus the field median.",
@@ -90,7 +118,7 @@ TERRAIN_DOCS = {"elevation": "height above sea level", "rel_elevation": "height 
                 "aspect_cos": "north (+1) / south (-1) facing; both 0 on flat ground (< 0.1°)",
                 "curvature": "convex (crest, +) / concave (hollow, -), minus the Laplacian"}
 CATEGORICAL = ("crop", "country")
-DYNAMIC_GROUPS = ("s2", "indices", "observed", "weather")
+DYNAMIC_GROUPS = ("s2", "indices", "observed", "lai", "weather", "era5land")
 STATIC_GROUPS = ("terrain", "soil", "coords") + CATEGORICAL
 
 
@@ -131,9 +159,14 @@ def resolve(features: list[str], static_names: list[str], categories: dict[str, 
             out.append(Group(g, i, ["-1..1"] * len(i), True, i))
         elif g == "observed":
             out.append(Group(g, ["observed"], ["0/1"], True))
+        elif g == "lai":
+            out.append(Group(g, ["lai"], ["m2 m-2"], True))
         elif g == "weather":
             w = _pick(arg, list(WEATHER_UNITS), WEATHER_DEFAULT, "weather features")
             out.append(Group(g, w, [WEATHER_UNITS[n] for n in w], True, w))
+        elif g == "era5land":
+            w = _pick(arg, list(ERA5LAND_UNITS), ERA5LAND_DEFAULT, "ERA5-Land features")
+            out.append(Group(g, [f"e5_{n}" for n in w], [ERA5LAND_UNITS[n] for n in w], True, w))
         elif g == "terrain":
             t = _pick(arg, list(TERRAIN_UNITS), list(TERRAIN_UNITS), "terrain features")
             out.append(Group(g, t, [TERRAIN_UNITS[n] for n in t], False, t))
@@ -146,7 +179,8 @@ def resolve(features: list[str], static_names: list[str], categories: dict[str, 
             cats = categories[g]
             out.append(Group(g, [f"{g}={c}" for c in cats], ["one-hot"] * len(cats), False, cats))
         else:
-            names = set(S2_BANDS) | set(INDICES) | set(WEATHER_UNITS) | set(TERRAIN_UNITS) | set(soil.PROPS)
+            names = (set(S2_BANDS) | set(INDICES) | set(WEATHER_UNITS) | set(TERRAIN_UNITS) | set(ERA5LAND_UNITS)
+                     | set(soil.PROPS))
             hint = (f" ('{g}' is a feature name: in YAML a spec with commas must be quoted, e.g. "
                     f"\"weather:tmean_c,prec_mm\")") if g in names else ""
             raise KeyError(f"unknown feature group {g!r}; known: {list(DYNAMIC_GROUPS + STATIC_GROUPS)}{hint}")
