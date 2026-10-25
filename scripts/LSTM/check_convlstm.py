@@ -66,7 +66,26 @@ def check_model(k: int) -> None:
             assert n_par < 200_000, n_par
 
 
+def check_augment_drop_cols() -> None:
+    """step_dropout with drop_cols leaves the other channels alone; without drop_cols the old behaviour."""
+    from lstm_v2 import augment_batch
+    xd, _ = make(5)
+    obs = 15
+    xd[..., obs] = 1.0
+    g = torch.Generator().manual_seed(0)
+    out = augment_batch(xd.clone(), {"step_dropout": 0.5}, g, obs, [], F, 0.0, drop_cols=list(range(12)) + [obs])
+    dropped = out[:, 12, :, obs] == 0                                  # centre pixel's dropped steps
+    assert dropped.float().mean().item() > 0.3
+    assert torch.equal(out[..., 12:15], xd[..., 12:15]), "channels outside drop_cols must be unchanged"
+    assert (out[:, 12, :, :12][dropped] == 0).all()
+    g = torch.Generator().manual_seed(0)
+    old = augment_batch(xd.clone(), {"step_dropout": 0.5}, g, obs, [], F, 0.0)
+    assert (old[:, 12, :, 12:15][old[:, 12, :, obs] == 0] == 0).all(), "default drops every channel"
+    print("augment drop_cols: ok")
+
+
 if __name__ == "__main__":
     check_cell_equals_lstmcell()
     check_model(5)
     check_model(9)
+    check_augment_drop_cols()

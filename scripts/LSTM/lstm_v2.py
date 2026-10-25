@@ -223,14 +223,16 @@ def field_balanced_mse(err2: np.ndarray, field_codes: np.ndarray) -> float:
 # --------------------------------------------------------------------------- augmentation
 
 def augment_batch(xd: torch.Tensor, aug: dict, gen: torch.Generator, obs_index: int | None,
-                  jitter_cols: list[int], n_feat: int, fill: float = 0.0) -> torch.Tensor:
+                  jitter_cols: list[int], n_feat: int, fill: float = 0.0,
+                  drop_cols: list[int] | None = None) -> torch.Tensor:
     """Season-shift augmentation of a training batch, pixel input (B, T, F) or patch input (B, K, T, F + 1).
 
     Time axis is -2; channels >= n_feat (neighbour-present) are untouched. Each sample gets one transform
     shared by all its neighbours. Steps that are shifted in from outside or dropped become `fill` with
     observed = 0 (if there is a mask channel).
       time_shift: s       shift every sample by k in [-s, s] steps
-      step_dropout: p     drop each observed step with probability p
+      step_dropout: p     drop each observed step with probability p (only the channels in drop_cols if given,
+                          e.g. the S2-derived ones, so per-field weather is not dropped with a "cloud")
       spectral_noise: s   additive N(0, s) per sample and spectral channel, observed steps only
     """
     if not aug:
@@ -256,9 +258,12 @@ def augment_batch(xd: torch.Tensor, aug: dict, gen: torch.Generator, obs_index: 
         feat = torch.gather(feat, 2, src.expand(B, K, T, n_feat))
         obs = torch.gather(obs, 2, src)
         keep &= inside
+    drop = torch.ones(B, 1, T, 1, dtype=torch.bool, device=dev)
     p = float(aug.get("step_dropout", 0.0))
     if p > 0:
-        keep &= torch.rand(B, 1, T, 1, generator=gen, device=dev) >= p
+        drop = torch.rand(B, 1, T, 1, generator=gen, device=dev) >= p
+    if drop_cols is None:
+        keep &= drop
     sd = float(aug.get("spectral_noise", 0.0))
     if sd > 0 and jitter_cols:
         noise = torch.zeros(B, 1, 1, n_feat, device=dev, dtype=feat.dtype)
@@ -266,6 +271,11 @@ def augment_batch(xd: torch.Tensor, aug: dict, gen: torch.Generator, obs_index: 
                                    ).to(feat.dtype)
         feat = feat + noise * (obs & keep).to(feat.dtype)
     feat = torch.where(keep, feat, torch.full_like(feat, fill))
+    if drop_cols is not None:
+        cols = torch.zeros(n_feat, dtype=torch.bool, device=dev)
+        cols[drop_cols] = True
+        feat = torch.where(drop | ~cols, feat, torch.full_like(feat, fill))
+        keep = keep & drop
     if obs_index is not None:
         feat[..., obs_index] = feat[..., obs_index] * keep.squeeze(-1).to(feat.dtype)
     out = torch.cat([feat, rest], dim=-1)

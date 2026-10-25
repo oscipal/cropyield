@@ -129,7 +129,8 @@ def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run, spec=Non
                 continue
             xd, xs = batch(X[0], b, device)
             if aug:
-                xd = augment_batch(xd, aug, gen, spec.obs_index, spec.jitter_cols, n_feat, spec.fill)
+                xd = augment_batch(xd, aug, gen, spec.obs_index, spec.jitter_cols, n_feat, spec.fill,
+                                   getattr(spec, "drop_cols", None))
             yb = y_tr[b].to(device, non_blocking=True)
             opt.zero_grad(set_to_none=True)
             loss = loss_fn(model(xd, xs), yb)
@@ -165,6 +166,9 @@ class LoaderSpec:
         self.dyn_names, self.static_names = d.dyn_names, d.static_names
         self.obs_index = d.dyn_names.index("observed") if "observed" in d.dyn_names else None
         self.jitter_cols = [i for i, n in enumerate(d.dyn_names) if n in S2_BANDS or n in INDICES]
+        # step dropout imitates a missing scene: only S2-derived channels, not per-field weather / ERA5-Land
+        self.drop_cols = [i for i, n in enumerate(d.dyn_names) if n in S2_BANDS or n in INDICES
+                          or n in ("lai", "observed")]
         self.fill = 0.0
         self.units, self.scaler, self.inputs = d.units, scaler, inputs
 
