@@ -355,6 +355,9 @@ MODEL_FAMILIES = {
                  "convlstm_w10_s1", "convlstm_w15", "convlstm_w30"],
     "Field image": ["field_image_s2_screen", "field_image_s2_crop256", "field_image_s2_fmean",
                     "field_image_s2_small", "field_image_s2_tf"],
+    "Input tests (loader)": ["quick_all", "quick_s2"],
+    "LOYO screening (ConvLSTM)": ["loyo_ref", "loyo_sow", "loyo_lai", "loyo_lai_only", "loyo_e5_sw",
+                                  "loyo_e5_sw_anom", "loyo_e5_anom_wx"],
 }
 
 
@@ -374,12 +377,28 @@ FAMILY_NOTES = {
                 "A 2-member val screening (docs/convlstm_screening.md) compared model sizes and time grids; the "
                 "10-day Sentinel-2 grid with a 30-day time shift was chosen for the final 5-member run, on the "
                 "pooled all-crop splits only.",
+    "Input tests (loader)": "Quick tests of the new data loader (src/loader.py, docs/features.md): a small pixel "
+                            "LSTM (1 layer, 64 units, 2 members) on the 10-day grid and the six pooled splits, with "
+                            "Sentinel-2 only (quick_s2) and with the rebuilt weather (precipitation, GDD per window), "
+                            "soil 0–30 cm and terrain (quick_all).",
+    "LOYO screening (ConvLSTM)": "Held-out-year screening (.claude/plans/loyo_conv.md): the 10-day ConvLSTM through "
+                                 "the loader, 2 members, europe/loyo/all and south_america/loyo/all, one change per "
+                                 "variant (time axis, LAI, ERA5-Land soil water, level vs. pattern), judged on val.",
     "Field image": "Predicts the whole yield map of a field in one pass (temporal encoder per pixel, then a 2D U-Net "
                    "over the field). Screened on 4 splits; not better than the patch LSTM, so not pursued.",
 }
 
 # one line per variant: what it is or what it changes against its reference
 VARIANT_NOTES = {
+    "loyo_ref": "Reference: ConvLSTM (10-day, S2 + indices + observed + crop / country) via the loader, 2 members.",
+    "loyo_lai": "loyo_ref + leaf area index per step (SNAP S2 biophysical network, src/lai.py).",
+    "loyo_lai_only": "loyo_ref with LAI + NDVI / NDRE / NDMI instead of the 12 reflectance bands.",
+    "loyo_e5_sw": "loyo_ref + ERA5-Land soil water (3 layers, 0-100 cm, 2 anomalies), late GRU branch, modality dropout 0.3.",
+    "loyo_e5_sw_anom": "loyo_ref + ERA5-Land soil-water anomalies only (vs 1995-2015), late GRU branch.",
+    "loyo_e5_anom_wx": "loyo_e5_sw_anom + temperature, precipitation and VPD anomalies, late GRU branch.",
+    "loyo_sow": "loyo_ref with the time axis aligned on each field-year's sowing date (36 steps after sowing).",
+    "quick_s2": "Control: S2 + indices + observed + crop / country, augmentation (±30 d shift, step dropout 0.1).",
+    "quick_all": "quick_s2 + weather (prec_mm, gdd per 10-day window), soil 0–30 cm (8 properties), rebuilt terrain.",
     "mean": "Every pixel gets the mean yield of the training pixels.",
     "mean_crop_country": "Every pixel gets the training mean of its crop × country.",
     "lstm_s2": "Paper pixel LSTM: 12 Sentinel-2 bands × 24 monthly steps, 2 LSTM layers, one model.",
@@ -428,10 +447,29 @@ def family_of(config: str) -> str:
 
 
 @st.cache_data(ttl=120)
+def config_paths() -> dict[str, Path]:
+    """Run name (the config's `name:`) -> config file; configs whose file name differs from the run name, e.g.
+    configs/loyo_conv/ref.yaml = loyo_ref, are found this way. configs/custom/ is left out."""
+    import yaml
+    from src.config import REPO_ROOT
+    out = {}
+    for p in sorted((REPO_ROOT / "configs").rglob("*.yaml")):
+        if p.parent.name == "custom" or p.name == "paths.yaml":
+            continue
+        try:
+            name = (yaml.safe_load(p.read_text()) or {}).get("name")
+        except Exception:
+            continue
+        if isinstance(name, str):
+            out.setdefault(name, p)
+    return out
+
+
+@st.cache_data(ttl=120)
 def config_info(config: str) -> dict:
     """Config file, its header comment (the screens describe their change there) and the summary description."""
     from src.config import REPO_ROOT
-    path = next(iter(sorted((REPO_ROOT / "configs").rglob(f"{config}.yaml"))), None)
+    path = config_paths().get(config) or next(iter(sorted((REPO_ROOT / "configs").rglob(f"{config}.yaml"))), None)
     text = path.read_text() if path else ""
     header = " ".join(l.lstrip("# ").strip() for l in text.splitlines()[:6] if l.startswith("#"))
     return {"path": str(path.relative_to(REPO_ROOT)) if path else None, "yaml": text, "header": header,
