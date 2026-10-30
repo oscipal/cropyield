@@ -29,7 +29,7 @@ sys.path.insert(0, str(HERE.parents[1]))
 sys.path.insert(0, str(HERE))
 from convlstm import ConvLSTMModel  # noqa: E402
 from lstm_v2 import (FeatureSpec, LSTMv2, PatchLSTM, TargetScaler, augment_batch,  # noqa: E402
-                     field_balanced_mse, gather_patches, sample_per_field)
+                     field_balanced_mse, field_z_mse, gather_patches, sample_per_field)
 from src.config import REPO_ROOT, load_paths, load_yaml  # noqa: E402
 from src.features import INDICES, S2_BANDS  # noqa: E402
 from src.loader import edge_distance, fit_scaler, load  # noqa: E402
@@ -122,10 +122,16 @@ def group_metrics(preds: pd.DataFrame, col: str = "pred") -> dict:
     return out
 
 
-def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run, spec=None, loss_pos=None):
-    """Train one model; early stopping on the field-balanced val MSE in t/ha. Returns model and history.
+def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run, spec=None, loss_pos=None, groups=None):
+    """Train one model with early stopping on train.select_on. Returns model, history and best epoch.
+      field_mse (default): field-balanced val pixel MSE in t/ha2
+      field_z: field-mean val error in units of the country x crop training SD, groups weighted equally
+               (field_z_mse; ranks like the field R2 per group). Needs groups (per-pixel group codes).
     loss_pos: training positions that enter the loss (default all); the others stay as patch inputs."""
     tc, mc = cfg["train"], cfg["model"]
+    select_on = tc.get("select_on", "field_mse")
+    assert select_on in ("field_mse", "field_z"), f"unknown train.select_on {select_on}"
+    assert groups is not None or select_on == "field_mse", "select_on field_z needs groups"
     seed = cfg["seed"] + 1000 * member
     set_seed(seed)
     rng = np.random.default_rng(seed)
@@ -168,16 +174,23 @@ def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run, spec=Non
         pred = predict(model, X[1], tc["eval_batch_size"], device) * scal[1][1] + scal[1][0]
         err2 = (pred - y_true[1]) ** 2
         rec = {"member": member, "epoch": epoch, "train_loss": total / n, "val_mse": float(err2.mean()),
-               "val_field_mse": field_balanced_mse(err2, codes[1]), "epoch_time_s": time.time() - t0}
+               "val_field_mse": field_balanced_mse(err2, codes[1])}
+        if groups is not None:
+            rec["val_field_z"] = field_z_mse(pred - y_true[1], scal[1][1], codes[1], groups[1],
+                                             tc.get("select_min_fields", 5))
+        rec["epoch_time_s"] = time.time() - t0
         history.append(rec)
         if run:
             run.log({f"m{member}/{k}": v for k, v in rec.items() if k != "member"})
-        improved = rec["val_field_mse"] < best["score"]
+        score = rec[f"val_{select_on}"]
+        improved = score < best["score"]
+        fz = f"val_field_z {rec['val_field_z']:.4f} " if "val_field_z" in rec else ""
         print(f"  m{member} epoch {epoch:2d} train_loss {rec['train_loss']:.4f} val_mse {rec['val_mse']:.4f} "
-              f"val_field_mse {rec['val_field_mse']:.4f} ({rec['epoch_time_s']:.0f} s){' *' if improved else ''}",
+              f"val_field_mse {rec['val_field_mse']:.4f} {fz}({rec['epoch_time_s']:.0f} s){' *' if improved else ''}",
               flush=True)
         if improved:
-            best, bad = {"score": rec["val_field_mse"], "epoch": epoch, "state": copy.deepcopy(model.state_dict())}, 0
+            best, bad = {"score": score, "epoch": epoch, "val_field_mse": rec["val_field_mse"],
+                         "state": copy.deepcopy(model.state_dict())}, 0
         else:
             bad += 1
             if bad >= tc["patience"]:
@@ -321,6 +334,8 @@ def prepare_split(split_name, cfg, data) -> dict:
     y_true = {r: meta["target"].to_numpy(np.float32)[idx[r]] for r in (0, 1, 2)}
     y_z = ((y_true[0] - scal[0][0]) / scal[0][1]).astype(np.float32)
     codes = {r: pd.factorize(meta["field"].iloc[idx[r]])[0] for r in (0, 1, 2)}
+    gkey = meta.groupby(["country", "crop"], observed=True).ngroup().to_numpy()
+    groups = {r: gkey[idx[r]] for r in (0, 1, 2)}   # country x crop code per pixel (for select_on field_z)
     if cfg["model"].get("daily_features"):
         if "features" not in cfg["inputs"]:
             raise ValueError("model.daily_features needs loader inputs (inputs.features)")
@@ -340,7 +355,7 @@ def prepare_split(split_name, cfg, data) -> dict:
     print(f"  features: {len(spec.dyn_names)} dynamic {spec.dyn_names}, {X[0][1].shape[1]} static; "
           f"prepared in {time.time() - t0:.0f} s", flush=True)
     return {"split": s, "idx": idx, "spec": spec, "X": X, "tscaler": tscaler, "scal": scal, "y_true": y_true,
-            "y_z": y_z, "codes": codes, "loss_pos": loss_pos}
+            "y_z": y_z, "codes": codes, "groups": groups, "loss_pos": loss_pos}
 
 
 def init_wandb(cfg, split_name, n_train_pixels):
@@ -416,9 +431,10 @@ def run_split(split_name, cfg, data, out_dir, device, use_wandb):
     n_members = cfg.get("ensemble", {}).get("n_members", 1)
     for m in range(n_members):
         model, hist, best = train_member(m, X, prep["y_z"], prep["y_true"], prep["codes"], scal, cfg, device, run,
-                                          prep["spec"], prep["loss_pos"])
+                                          prep["spec"], prep["loss_pos"], prep["groups"])
         history += hist
-        bests.append({"member": m, "best_epoch": best["epoch"], "best_val_field_mse": best["score"],
+        bests.append({"member": m, "best_epoch": best["epoch"], "best_val_field_mse": best["val_field_mse"],
+                      "select_on": tc.get("select_on", "field_mse"), "best_score": best["score"],
                       "epochs_run": len(hist)})
         torch.save(model.state_dict(), out_dir / f"model_m{m}.pt")
         for r in (1, 2):

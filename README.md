@@ -234,7 +234,10 @@ that; the ADM set is weather + soil (8 properties × 6 depths, no uncertainty la
 - a channel marking observed time steps;
 - crop and country as one-hot inputs;
 - the yield z-scored per crop × country (predictions converted back to t/ha);
-- field-balanced training (at most 500 pixels per field per epoch) and early stopping on the field-averaged val error;
+- field-balanced training (at most 500 pixels per field per epoch) and early stopping on the field-averaged val error
+  (`train.select_on: field_mse`, the default: pixel MSE in t/ha² averaged per field), or, with `select_on: field_z`
+  (from 2026-10-30), on the field-mean error divided by the country × crop training SD, averaged per group and then
+  over groups with ≥ 5 val fields (≈ 1 − field R² per group); both are logged per epoch;
 - dropout 0.2 and weight decay 1e-4;
 - a Deep Ensemble of 5 models with different seeds, averaged.
 

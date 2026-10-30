@@ -220,6 +220,25 @@ def field_balanced_mse(err2: np.ndarray, field_codes: np.ndarray) -> float:
     return float(np.mean(s[n > 0] / n[n > 0]))
 
 
+def field_z_mse(err: np.ndarray, sd: np.ndarray, field_codes: np.ndarray, group_codes: np.ndarray,
+                min_fields: int = 5) -> float:
+    """Selection score that ranks epochs like field R2 per country x crop: the field-mean error (mean prediction
+    minus mean target) in units of the group's training yield SD, squared, averaged per group and then over the
+    groups with at least min_fields fields (all groups if none has). Per group about 1 - R2, but divided by the
+    training spread instead of the val spread, so tiny groups stay stable."""
+    n = np.bincount(field_codes)
+    ok = n > 0
+    fe = np.bincount(field_codes, weights=err)[ok] / n[ok]
+    fsd = np.bincount(field_codes, weights=sd)[ok] / n[ok]
+    fg = np.zeros(len(n), dtype=np.int64)
+    fg[field_codes] = group_codes
+    fg = fg[ok]
+    nf = np.bincount(fg)
+    per = np.bincount(fg, weights=(fe / fsd) ** 2)[nf > 0] / nf[nf > 0]
+    keep = nf[nf > 0] >= min_fields
+    return float(per[keep].mean() if keep.any() else per.mean())
+
+
 # --------------------------------------------------------------------------- augmentation
 
 def augment_batch(xd: torch.Tensor, aug: dict, gen: torch.Generator, obs_index: int | None,
