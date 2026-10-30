@@ -1,6 +1,7 @@
 """Build all single train/val/test splits (scope x method x crop) into one zarr store.
 
-Store layout (paths.yaml: split_suite), one group per ``{scope}/{method}/{crop}``:
+Store layout (paths.yaml: split_suite), one group per ``{scope}/{method}/{crop}``; cross-validation folds over years
+(src.splitting.cv_folds, --methods cv) are groups ``{scope}/cv{year}/all``:
     split           (field,)  int8   0 train, 1 val, 2 test
     country, farm, region, physical_field, crop, year   (field,)  str
     attrs: chosen test/val years or regions, score components, achieved shares
@@ -21,9 +22,10 @@ import xarray as xr
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.config import load_paths  # noqa: E402
 from src.splits import load_split  # noqa: E402
-from src.splitting import ROLES, SCOPES, loro_split, loyo_split, subset  # noqa: E402
+from src.splitting import CV_YEARS, ROLES, SCOPES, cv_folds, loro_split, loyo_split, subset  # noqa: E402
 
 METHODS = {"loyo": loyo_split, "loro": loro_split}
+ALL_METHODS = [*METHODS, "cv"]   # cv: the folds of CV_YEARS[scope], crop "all" only
 META_COLS = ["country", "farm", "region", "physical_field", "crop", "year"]
 
 
@@ -31,7 +33,7 @@ def check(sub: pd.DataFrame, role: np.ndarray, method: str) -> None:
     assert len(role) == len(sub) and set(np.unique(role)) == {0, 1, 2}
     crops = set(sub["crop"])
     assert set(sub.loc[role == 0, "crop"]) == crops, "train misses a crop"
-    if method == "loyo":
+    if method in ("loyo", "cv"):
         ty, vy = set(sub.loc[role == 2, "year"]), set(sub.loc[role == 1, "year"])
         assert len(ty) == len(vy) == 1 and not ty & vy
         assert not set(sub.loc[role == 0, "year"]) & (ty | vy)
@@ -44,28 +46,36 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--trials", type=int, default=20_000, help="random assignments tried per LORO split")
     ap.add_argument("--scopes", nargs="*", default=list(SCOPES), choices=list(SCOPES))
-    ap.add_argument("--methods", nargs="*", default=list(METHODS), choices=list(METHODS))
+    ap.add_argument("--methods", nargs="*", default=ALL_METHODS, choices=ALL_METHODS)
     ap.add_argument("--crops", nargs="*", default=None, help="e.g. all; default: every crop plus all")
     args = ap.parse_args()
     paths = load_paths()
     fields = pd.read_parquet(paths["work_dir"] / "fields.parquet")
     store = paths["split_suite"]
     # a full run rebuilds the store; with any filter only the selected groups are (re)written
-    partial = (set(args.scopes), set(args.methods), args.crops) != (set(SCOPES), set(METHODS), None)
+    partial = (set(args.scopes), set(args.methods), args.crops) != (set(SCOPES), set(ALL_METHODS), None)
     if store.exists() and not partial:
         shutil.rmtree(store)
 
     summary = []
     for scope in args.scopes:
-        for method, fn in METHODS.items():
-            if method not in args.methods:
-                continue
-            crops = sorted(subset(fields, scope, "all", method)["crop"].unique())
-            for crop in (crops + ["all"] if args.crops is None else args.crops):
-                sub = subset(fields, scope, crop, method)
-                role, info = fn(sub) if method == "loyo" else fn(sub, n_trials=args.trials)
+        for method in args.methods:
+            if method == "cv":
+                if scope not in CV_YEARS or (args.crops is not None and "all" not in args.crops):
+                    continue
+                sub = subset(fields, scope, "all")
+                jobs = [(name, "all", sub, role, info) for name, role, info in cv_folds(sub, CV_YEARS[scope])]
+            else:
+                crops = sorted(subset(fields, scope, "all", method)["crop"].unique())
+                jobs = []
+                for crop in (crops + ["all"] if args.crops is None else args.crops):
+                    sub = subset(fields, scope, crop, method)
+                    role, info = (METHODS[method](sub) if method == "loyo"
+                                  else METHODS[method](sub, n_trials=args.trials))
+                    jobs.append((method, crop, sub, role, info))
+            for name, crop, sub, role, info in jobs:
                 check(sub.assign(role=role), role, method)
-                group = f"{scope}/{method}/{crop}"
+                group = f"{scope}/{name}/{crop}"
                 shares = {f"share_{k}": float((role == v).mean()) for k, v in ROLES.items()}
                 attrs = {"scope": scope, "method": method, "crop": crop, "countries": SCOPES[scope],
                          **info, **shares}
@@ -75,11 +85,11 @@ def main() -> None:
                                 attrs=json.loads(json.dumps(attrs, default=lambda o: o.item())))
                 ds.to_zarr(store, group=group, mode="w", consolidated=False)
 
-                loaded = load_split(store, scope, method, crop)
-                for name, code in ROLES.items():
-                    assert sorted(loaded[f"{name}_fields"]) == sorted(sub.loc[role == code, "field"])
+                loaded = load_split(store, scope, name, crop)
+                for rname, code in ROLES.items():
+                    assert sorted(loaded[f"{rname}_fields"]) == sorted(sub.loc[role == code, "field"])
 
-                held = (f"test {info['test_years']} / val {info['val_years']}" if method == "loyo" else
+                held = (f"test {info['test_years']} / val {info['val_years']}" if method in ("loyo", "cv") else
                         f"test {len(info['test_regions'])} / val {len(info['val_regions'])} regions")
                 summary.append({"split": group, "n": len(sub), "held out": held,
                                 "train/val/test": " / ".join(f"{shares[f'share_{k}']:.0%}" for k in ROLES),

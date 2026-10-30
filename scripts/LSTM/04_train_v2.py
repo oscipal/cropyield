@@ -45,7 +45,7 @@ def all_split_names(store: Path) -> list[str]:
     import zarr
     root = zarr.open_group(store, mode="r")
     return [f"{s}/{m}/{c}" for s in sorted(root.group_keys()) for m in sorted(root[s].group_keys())
-            for c in sorted(root[s][m].group_keys())]
+            if not m.startswith("cv") for c in sorted(root[s][m].group_keys())]   # cv folds only when named
 
 
 def set_seed(seed: int) -> None:

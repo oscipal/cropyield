@@ -5,6 +5,8 @@ Unit of assignment is the field-year (never pixels inside a field). Roles: 0 tra
 * loyo: test = one year, val = another year, train = the rest. Exhaustive over all year pairs.
 * loro: test and val are sets of whole regions (farms, merged where they share a physical field),
   so every year of a physical field stays on one side. Seeded random search.
+* cv (cross-validation over years, cv_folds): one split per year of CV_YEARS[scope], group <scope>/cv<year>/all;
+  test = that year, val = the next CV year (cyclic), train = all other years. Every CV year is test once and val once.
 
 Both minimise, summed over val and test,
     SIZE_WEIGHT * |field-year share - target|
@@ -30,6 +32,11 @@ SCOPES = {
 MIN_REGIONS = 3  # loro needs a train, a val and a test region; crops with fewer regions cannot be split
 TARGET = 0.15
 SIZE_WEIGHT = 2.0
+# Cross-validation over years (user, 2026-10-30): only years with enough data are test (and val) years: more than 200
+# field-years and >= 6 country x crop groups with >= CV_MIN_FIELDS fields (Switzerland not counted). 2016 (Germany
+# only), 2017 and 2024 stay in the training set of every fold.
+CV_YEARS = {"world": ["2018", "2019", "2020", "2021", "2022", "2023"]}
+CV_MIN_FIELDS = 10  # a country x crop x year is scored only with at least this many field-years
 
 
 def subset(fields: pd.DataFrame, scope: str, crop: str, method: str | None = None) -> pd.DataFrame:
@@ -134,3 +141,20 @@ def loro_split(sub: pd.DataFrame, n_trials: int = 20_000, seed: int = 42) -> tup
     return role, {"method": "loro", "test_regions": sorted(reg_names[reg_role == 2].tolist()),
                   "val_regions": sorted(reg_names[reg_role == 1].tolist()),
                   "score": score, **comps, "n_trials": n_trials, "seed": seed}
+
+
+def cv_folds(sub: pd.DataFrame, years: list[str]) -> list[tuple[str, np.ndarray, dict]]:
+    """Cross-validation over years: (method name "cv<year>", role, info) per test year; val = the next year of
+    `years` (cyclic), train = every other year of sub (also the years outside `years`)."""
+    year = sub["year"].astype(str).to_numpy()
+    scorer = Scorer(sub, use_year=False)
+    out = []
+    for i, test_y in enumerate(years):
+        val_y = years[(i + 1) % len(years)]
+        role = np.where(year == test_y, 2, np.where(year == val_y, 1, 0)).astype(np.int8)
+        res = scorer.evaluate(role)
+        if res is None:
+            raise ValueError(f"cv fold {test_y}: train misses a crop or val / test is empty")
+        out.append((f"cv{test_y}", role, {"method": "cv", "test_years": [test_y], "val_years": [val_y],
+                                          "cv_years": list(years), "score": res[0], **res[1]}))
+    return out
