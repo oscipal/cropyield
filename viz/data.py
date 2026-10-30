@@ -393,8 +393,8 @@ MODEL_FAMILIES = {
                                   "loyo_e5_sw_anom", "loyo_e5_anom_wx"],
     "World variants (ConvLSTM)": ["wv_base", "wv_edge", "wv_1d", "wv_wxdaily", "wv_sm", "wv_smanom", "wv_gdd",
                                   "wv_scenes", "wv_base_aug", "wv_1d_aug", "wv_1d_aug_s2",
-                                  "wv_1d_aug_scenes", "wv_base_aug_s2", "wv_base_aug_strong",
-                                  "wv_base_aug_smanom", "wv_base_aug_scenes"],
+                                  "wv_1d_aug_scenes", "wv_base_aug_fz", "wv_base_aug_fz_s2"],
+    "Cross-validation (World)": ["cv_1d_aug", "cv_1d_aug_fz", "cv_1d_aug_fz_s2"],
 }
 
 
@@ -426,21 +426,27 @@ FAMILY_NOTES = {
                                  "(.claude/plans/world_variants.md): convlstm_base on the new loader (30-day grid), "
                                  "World LOYO only, 5 members each; variants: edge mask, 1-D model, daily weather, "
                                  "soil moisture, soil-moisture anomalies, GDD time axis, all scenes without windows.",
+    "Cross-validation (World)": "Cross-validation over years (.claude/plans/cross_validation.md): 6 folds "
+                                "world/cv<year>/all, test years 2018-2023, val = the next CV year; scores pooled over "
+                                "the folds on the Cross-validation page.",
     "Field image": "Predicts the whole yield map of a field in one pass (temporal encoder per pixel, then a 2D U-Net "
                    "over the field). Screened on 4 splits; not better than the patch LSTM, so not pursued.",
 }
 
 # one line per variant: what it is or what it changes against its reference
 VARIANT_NOTES = {
+    "cv_1d_aug": "CV baseline: 1-D pixel LSTM + augmentation (as wv_1d_aug), old stopping criterion (field-balanced "
+                 "pixel MSE, t/ha).",
+    "cv_1d_aug_fz": "cv_1d_aug with early stopping on the field-level criterion (select_on: field_z); same seed.",
+    "cv_1d_aug_fz_s2": "cv_1d_aug_fz with other random seeds: run-to-run noise under CV.",
     "wv_base": "Base: convlstm_base on the new loader (S2 + indices + observed + crop / country, 30-day grid), 5 members.",
     "wv_base_aug": "wv_base with augmentation as convlstm_base (±1-step time shift, 10 % step dropout): what dropping it costs.",
     "wv_1d_aug": "wv_1d (pixel LSTM, no neighbourhood) with the augmentation of wv_base_aug.",
     "wv_1d_aug_s2": "wv_1d_aug with other random seeds: how much a run differs from itself.",
     "wv_1d_aug_scenes": "wv_1d_aug on all S2 scenes (no windows), ±30-day shift and 10 % scene dropout.",
-    "wv_base_aug_s2": "wv_base_aug with other random seeds: run-to-run noise of the ConvLSTM.",
-    "wv_base_aug_strong": "wv_base_aug with stronger augmentation: ±2-step shift, 20 % step dropout.",
-    "wv_base_aug_smanom": "wv_base_aug + daily soil-moisture anomalies (late GRU branch, as wv_smanom).",
-    "wv_base_aug_scenes": "wv_base_aug on all S2 scenes (no windows), ±30-day shift and 10 % scene dropout.",
+    "wv_base_aug_fz": "wv_base_aug with early stopping on the field-level criterion (field-mean error / country × "
+                      "crop training SD, groups equal); same seed.",
+    "wv_base_aug_fz_s2": "wv_base_aug_fz with other random seeds: run-to-run noise of the ConvLSTM.",
     "wv_edge": "wv_base with training pixels within 20 m of the outline or of holes ≥ 0.25 ha left out of the loss.",
     "wv_1d": "wv_base as a pixel LSTM (32 units): the pixel's own series, no neighbourhood.",
     "wv_wxdaily": "wv_base + daily ERA5-Land temperature and precipitation per field, late GRU branch.",
