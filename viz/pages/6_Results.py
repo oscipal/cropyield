@@ -61,11 +61,11 @@ with st.expander("More options"):
     n_mem = int(S_arch["n_members"].max() or 1)
     kinds = ["single", "ensemble"] + [f"m{i}" for i in range(n_mem)]
     kind = st.segmented_control(
-        "Score of", kinds, default="single", key="res_kind",
+        "Score of", kinds, default="ensemble", key="res_kind",
         format_func=lambda k: KIND_LABELS.get(k) or f"model {int(k[1:]) + 1}",
         help="One model = the members' average score; ensemble = the averaged prediction; model i = member i alone "
              "(its own random seed). Setups with fewer members have no point for the higher model numbers.") \
-        or "single"
+        or "ensemble"
     o3, o4 = st.columns([3, 1.4])
     exps = list(dict.fromkeys(S_arch["experiment"]))
     sel_exps = o3.pills("Experiment", exps, selection_mode="multi", default=exps, key=f"res_exps_{arch}")
@@ -75,9 +75,9 @@ with st.expander("More options"):
 higher = metric.endswith("r2")
 yfmt = FMT.get(metric, ".3f")
 st.caption("Every model is trained on all crops and countries of a region together; the score is the median over its "
-           "country × crop subsets (≥ 5 fields). Choices between setups are made on **val**; test is for the final "
-           "record. *One model* = the members' average score, comparable between 2-member screenings and 5-member "
-           "final runs.")
+           "country × crop subsets (≥ 5 fields). Setups are compared on **val and test** side by side, on the "
+           "**ensemble** score (the averaged prediction of the members, the model that would be used); *one model* "
+           "(More options) = the members' average score, comparable between 2-member screenings and 5-member runs.")
 if fset != "all":
     st.caption("*New* = val / test field-years whose physical field (same land, other years) has no field-year in "
                "the split's train set; *seen* = it has one (scripts/loyo_eval.py). Scores are recomputed from the "
