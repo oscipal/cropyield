@@ -41,7 +41,7 @@ with c1:
     st.dataframe(t.pivot_table(index=["country", "crop"], columns="set", values="field", aggfunc="count",
                                fill_value=0)[["train", "val", "test"]], width="stretch")
 with c2:
-    by = "year" if method == "loyo" else "region"
+    by = "year" if method == "loyo" or method.startswith("cv") else "region"
     st.markdown(f"**Field-years per set × {by}**")
     st.dataframe(t.pivot_table(index=by, columns="set", values="field", aggfunc="count", fill_value=0)
                  .reindex(columns=["train", "val", "test"], fill_value=0), width="stretch")

@@ -53,7 +53,7 @@ fl["abs_error"] = fl["error"].abs()
 
 # ---------------------------------------------------------------- year
 role_years = sorted(members[members["set"] == role]["year"].unique())
-if method == "loyo":
+if method == "loyo" or method.startswith("cv"):
     year = role_years[0] if len(role_years) == 1 else None
     other = members[members["set"] == ("val" if role == "test" else "test")]["year"].unique()
     st.markdown(f"**LOYO: {role} year {', '.join(role_years)}**"
@@ -68,8 +68,8 @@ eval_sets = ["test", "val"] if color_by == "set" else [role]
 shown = split_shapes[split_shapes["set"].isin(eval_sets)]
 train = split_shapes[~split_shapes["set"].isin(eval_sets)]
 if year is not None:
-    shown = shown[shown["year"] == year] if method != "loyo" else shown
-    train = train[train["year"] == year] if method != "loyo" else train
+    shown = shown[shown["year"] == year] if not (method == "loyo" or method.startswith("cv")) else shown
+    train = train[train["year"] == year] if not (method == "loyo" or method.startswith("cv")) else train
 train = train.drop_duplicates("physical_field")
 shown = shown.merge(fl[["field", "error", "abs_error", "target", "pred"]], on="field", how="left")
 for c in ("error", "abs_error", "target", "pred"):
@@ -77,7 +77,7 @@ for c in ("error", "abs_error", "target", "pred"):
 
 if st.session_state.get("pred_field") not in set(fl["field"]):
     st.session_state["pred_field"] = fl["field"].iloc[0]
-if year is not None and method != "loyo":
+if year is not None and not (method == "loyo" or method.startswith("cv")):
     in_year = fl[fl["year"] == year]["field"]
     if len(in_year) and st.session_state["pred_field"] not in set(in_year):
         st.session_state["pred_field"] = in_year.iloc[0]
@@ -113,7 +113,7 @@ if len(split_shapes):
             st.rerun()
 
 # ---------------------------------------------------------------- field-level scatter + ranking
-flv = fl if year is None or method == "loyo" else fl[fl["year"] == year]
+flv = fl if year is None or method == "loyo" or method.startswith("cv") else fl[fl["year"] == year]
 c1, c2 = st.columns([3, 2])
 with c1:
     color = st.radio("Scatter colour", ["country", "crop", "year"], horizontal=True, key="pred_scatter_color")
