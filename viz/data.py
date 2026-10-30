@@ -380,7 +380,9 @@ MODEL_FAMILIES = {
     "LOYO screening (ConvLSTM)": ["loyo_ref", "loyo_sow", "loyo_lai", "loyo_lai_only", "loyo_edge20", "loyo_wx", "loyo_soilterr", "loyo_e5_sw",
                                   "loyo_e5_sw_anom", "loyo_e5_anom_wx"],
     "World variants (ConvLSTM)": ["wv_base", "wv_edge", "wv_1d", "wv_wxdaily", "wv_sm", "wv_smanom", "wv_gdd",
-                                  "wv_scenes", "wv_base_aug"],
+                                  "wv_scenes", "wv_base_aug", "wv_1d_aug", "wv_1d_aug_s2",
+                                  "wv_1d_aug_scenes", "wv_base_aug_s2", "wv_base_aug_strong",
+                                  "wv_base_aug_smanom", "wv_base_aug_scenes"],
 }
 
 
@@ -420,6 +422,13 @@ FAMILY_NOTES = {
 VARIANT_NOTES = {
     "wv_base": "Base: convlstm_base on the new loader (S2 + indices + observed + crop / country, 30-day grid), 5 members.",
     "wv_base_aug": "wv_base with augmentation as convlstm_base (±1-step time shift, 10 % step dropout): what dropping it costs.",
+    "wv_1d_aug": "wv_1d (pixel LSTM, no neighbourhood) with the augmentation of wv_base_aug.",
+    "wv_1d_aug_s2": "wv_1d_aug with other random seeds: how much a run differs from itself.",
+    "wv_1d_aug_scenes": "wv_1d_aug on all S2 scenes (no windows), ±30-day shift and 10 % scene dropout.",
+    "wv_base_aug_s2": "wv_base_aug with other random seeds: run-to-run noise of the ConvLSTM.",
+    "wv_base_aug_strong": "wv_base_aug with stronger augmentation: ±2-step shift, 20 % step dropout.",
+    "wv_base_aug_smanom": "wv_base_aug + daily soil-moisture anomalies (late GRU branch, as wv_smanom).",
+    "wv_base_aug_scenes": "wv_base_aug on all S2 scenes (no windows), ±30-day shift and 10 % scene dropout.",
     "wv_edge": "wv_base with training pixels within 20 m of the outline or of holes ≥ 0.25 ha left out of the loss.",
     "wv_1d": "wv_base as a pixel LSTM (32 units): the pixel's own series, no neighbourhood.",
     "wv_wxdaily": "wv_base + daily ERA5-Land temperature and precipitation per field, late GRU branch.",
