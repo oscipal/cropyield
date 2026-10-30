@@ -173,10 +173,12 @@ def subsample(rows: np.ndarray, field: np.ndarray, per_field: int, seed: int) ->
     return np.sort(rows[keep])
 
 
-def edge_distance(rows: np.ndarray) -> np.ndarray:
+def edge_distance(rows: np.ndarray, min_hole_px: int | None = None) -> np.ndarray:
     """Distance (m) from each pixel centre to the nearest pixel centre of its field-year raster without yield
-    (outside the field, or a hole in the yield map); computed over all labelled pixels of the field-year."""
-    from scipy.ndimage import distance_transform_edt
+    (outside the field, or a hole in the yield map); computed over all labelled pixels of the field-year.
+    min_hole_px: holes inside the field outline smaller than this many pixels count as field (gaps in the yield
+    map, not obstacles), so only the outline and the larger holes are edges."""
+    from scipy.ndimage import binary_fill_holes, distance_transform_edt, label
     base = _base()
     meta, fields = base["meta"], base["fields"]
     r_all, c_all = meta["row"].to_numpy().astype(np.int64), meta["col"].to_numpy().astype(np.int64)
@@ -189,6 +191,11 @@ def edge_distance(rows: np.ndarray) -> np.ndarray:
         r0, c0 = rr.min() - 1, cc.min() - 1
         mask = np.zeros((rr.max() - r0 + 2, cc.max() - c0 + 2), dtype=bool)   # 1-pixel empty border
         mask[rr - r0, cc - c0] = True
+        if min_hole_px:
+            lab, n = label(binary_fill_holes(mask) & ~mask)
+            if n:
+                small = np.flatnonzero(np.bincount(lab.ravel())[1:] < min_hole_px) + 1
+                mask |= np.isin(lab, small)
         dist = distance_transform_edt(mask) * PIXEL_M
         out[a:b] = dist[r_all[rows[a:b]] - r0, c_all[rows[a:b]] - c0]
     return out

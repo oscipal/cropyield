@@ -32,7 +32,7 @@ from lstm_v2 import (FeatureSpec, LSTMv2, PatchLSTM, TargetScaler, augment_batch
                      field_balanced_mse, gather_patches, sample_per_field)
 from src.config import REPO_ROOT, load_paths, load_yaml  # noqa: E402
 from src.features import INDICES, S2_BANDS  # noqa: E402
-from src.loader import fit_scaler, load  # noqa: E402
+from src.loader import edge_distance, fit_scaler, load  # noqa: E402
 from src.metrics import compute_metrics  # noqa: E402
 from src.splits import load_split  # noqa: E402
 
@@ -111,8 +111,9 @@ def group_metrics(preds: pd.DataFrame, col: str = "pred") -> dict:
     return out
 
 
-def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run, spec=None):
-    """Train one model; early stopping on the field-balanced val MSE in t/ha. Returns model and history."""
+def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run, spec=None, loss_pos=None):
+    """Train one model; early stopping on the field-balanced val MSE in t/ha. Returns model and history.
+    loss_pos: training positions that enter the loss (default all); the others stay as patch inputs."""
     tc, mc = cfg["train"], cfg["model"]
     seed = cfg["seed"] + 1000 * member
     set_seed(seed)
@@ -130,7 +131,10 @@ def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run, spec=Non
     for epoch in range(tc["max_epochs"]):
         model.train()
         t0, total, n = time.time(), 0.0, 0
-        pos = torch.from_numpy(sample_per_field(codes[0], tc.get("pixels_per_field"), rng))
+        if loss_pos is None:
+            pos = torch.from_numpy(sample_per_field(codes[0], tc.get("pixels_per_field"), rng))
+        else:
+            pos = torch.from_numpy(loss_pos[sample_per_field(codes[0][loss_pos], tc.get("pixels_per_field"), rng)])
         for i in range(0, len(pos), tc["batch_size"]):
             b = pos[i:i + tc["batch_size"]]
             if len(b) < 2:  # BatchNorm needs more than one sample
@@ -244,10 +248,22 @@ def prepare_split(split_name, cfg, data) -> dict:
     y_true = {r: meta["target"].to_numpy(np.float32)[idx[r]] for r in (0, 1, 2)}
     y_z = ((y_true[0] - scal[0][0]) / scal[0][1]).astype(np.float32)
     codes = {r: pd.factorize(meta["field"].iloc[idx[r]])[0] for r in (0, 1, 2)}
+    loss_pos = None
+    buf = cfg["train"].get("loss_edge_buffer_m")
+    if buf:  # edge pixels stay as inputs (ConvLSTM patches) but leave the loss; val / test are untouched
+        if "features" not in cfg["inputs"]:
+            raise ValueError("train.loss_edge_buffer_m needs loader inputs (inputs.features)")
+        inner = edge_distance(idx[0], cfg["train"].get("loss_edge_min_hole_px")) > buf
+        has_inner = np.bincount(codes[0], weights=inner, minlength=codes[0].max() + 1) > 0
+        keep = inner | ~has_inner[codes[0]]   # field-years without any inner pixel keep all their pixels
+        loss_pos = np.flatnonzero(keep)
+        print(f"  loss_edge_buffer_m {buf}: {len(loss_pos):,} of {len(keep):,} training pixels in the loss; "
+              f"{int((~has_inner).sum())} of {len(has_inner)} field-years have no pixel beyond the buffer "
+              f"(all their pixels kept)", flush=True)
     print(f"  features: {len(spec.dyn_names)} dynamic {spec.dyn_names}, {X[0][1].shape[1]} static; "
           f"prepared in {time.time() - t0:.0f} s", flush=True)
     return {"split": s, "idx": idx, "spec": spec, "X": X, "tscaler": tscaler, "scal": scal, "y_true": y_true,
-            "y_z": y_z, "codes": codes}
+            "y_z": y_z, "codes": codes, "loss_pos": loss_pos}
 
 
 def init_wandb(cfg, split_name, n_train_pixels):
@@ -323,7 +339,7 @@ def run_split(split_name, cfg, data, out_dir, device, use_wandb):
     n_members = cfg.get("ensemble", {}).get("n_members", 1)
     for m in range(n_members):
         model, hist, best = train_member(m, X, prep["y_z"], prep["y_true"], prep["codes"], scal, cfg, device, run,
-                                          prep["spec"])
+                                          prep["spec"], prep["loss_pos"])
         history += hist
         bests.append({"member": m, "best_epoch": best["epoch"], "best_val_field_mse": best["score"],
                       "epochs_run": len(hist)})
