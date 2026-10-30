@@ -15,6 +15,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.config import load_paths  # noqa: E402
+from src import cv  # noqa: E402
 from src.splits import load_split  # noqa: E402
 
 PATHS = load_paths()
@@ -915,3 +916,23 @@ def flat_config(config: str) -> dict[str, str]:
                 out[key] = json.dumps(v) if isinstance(v, (list, dict)) else str(v)
     walk({k: v for k, v in (yaml.safe_load(path.read_text()) or {}).items() if k not in ("name", "wandb")})
     return out
+
+
+# --------------------------------------------------------------------------- cross-validation over years (src/cv.py)
+
+@st.cache_data(ttl=120)
+def cv_configs(scope: str = "world") -> pd.DataFrame:
+    """Configs with at least one CV fold folder <scope>__cv<year>__all: the CV years started and finished (finished
+    includes world__loyo__all as the stand-in for its fold, src.cv.fold_dirs)."""
+    rows = []
+    for cfg in sorted(p for p in RUNS.iterdir() if p.is_dir() and not p.name.startswith("_")):
+        started = sorted(d.name.split("__")[1].removeprefix("cv") for d in cfg.glob(f"{scope}__cv*__all") if d.is_dir())
+        if started:
+            rows.append({"config": cfg.name, "started": started, "done": list(cv.fold_dirs(cfg, scope))})
+    return pd.DataFrame(rows, columns=["config", "started", "done"])
+
+
+@st.cache_data(ttl=120)
+def cv_field_preds(config: str, role: str, scope: str = "world") -> pd.DataFrame:
+    """Field-mean target and ensemble prediction of all finished folds of a config (src.cv.field_preds)."""
+    return cv.field_preds(cv.fold_dirs(RUNS / config, scope), role)
