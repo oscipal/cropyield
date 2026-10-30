@@ -14,7 +14,7 @@ The repository contains
 3. **LSTM v2**, the paper LSTM with extra inputs, per-crop target scaling, field-balanced training,
    regularisation and a 5-member Deep Ensemble.
 
-Results: `docs/results_summary.md` (all models, short), full tables in `docs/results_convlstm.md` (current split suite), `docs/results_inputs_quick.md` (quick input test with the new loader) and `docs/results_lstm.md` (old suite, before Switzerland); also on the visualizer's homepage.
+Results: `docs/results_summary.md` (all models, short), full tables in `docs/results_convlstm.md` (current split suite), `docs/results_inputs_quick.md` (quick input test with the new loader) and `docs/results_lstm.md` (old suite, before Switzerland); World variants (base + one change each, val and test) in `docs/world_variants_screening.md` and their test tables in `docs/results_world_variants.md`; also on the visualizer's homepage.
 
 ## Setup
 
@@ -40,6 +40,8 @@ configs/
   lstm_v2_s2.yaml         LSTM v2, Sentinel-2 only
   inputs_quick/           small pixel LSTM via src/loader.py: quick_s2 (S2 only), quick_all (+ weather, soil, terrain)
   loyo_conv/              LOYO screening of the ConvLSTM (time axis, LAI, ERA5-Land soil water; .claude/plans/loyo_conv.md)
+  world_variants/         base model (convlstm_base, World LOYO) + one change each: edge, 1d, wxdaily, sm, smanom,
+                          gdd, scenes (.claude/plans/world_variants.md)
   field_image_s2.yaml     field-image model (temporal encoder + U-Net over the whole field)
 scripts/
   05_build_field_table.py one row per field-year (physical fields, regions)
@@ -48,12 +50,14 @@ scripts/
   check_loader.py         src/loader.py against the old input pipeline and the source files
   check_lai.py            src/lai.py against the reference SNAP LAI script, plausibility, angle sensitivity
   loyo_diagnosis.py       read-only diagnosis of the LOYO val errors and the data behind them -> docs/loyo_diagnosis.md
+  loyo_eval.py            val-only LOYO evaluation: peak-NDVI baseline, new-fields-only score, paired bootstrap CIs -> docs/loyo_eval.md
   features_doc.py         writes docs/features.md from src/features.py
   LSTM/
     01_extract.py         NetCDF -> memmaps for training (once)
     02_train.py           paper LSTM, one model per split
     03_report.py          writes docs/results_lstm.md
     04_train_v2.py        LSTM v2, one ensemble per split
+    17_baseline_peak_ndvi.py  peak-NDVI baseline (loyo_eval.py's OLS per country x crop) as run peak_ndvi, 6 pooled splits, val + test
     lstm_lib.py           paper LSTM model, band groups, normalisation
     lstm_v2.py            v2 features, target scaling, model, field sampling
     07_train_field_image.py  field-image model, one ensemble per split (inputs and outputs as 04)
@@ -67,6 +71,11 @@ scripts/
     14_build_terrain.py   elevation, slope, aspect, curvature recomputed from the raw DEM -> lstm/terrain.npy
     15_download_era5land.py  ERA5-Land soil water + weather per 0.1 deg cell, 1995-2024, from the CDS -> era5land/
     16_build_era5land_grid.py  ERA5-Land on the S2 time grids, with anomalies vs 1995-2015 -> lstm/<grid>/era5land.npy
+                          (--grids daily: one value per day, days 210-719 -> lstm/daily/, for model.daily_features)
+    19_build_s2_scenes.py all usable S2 scenes per field-year, no windows (>= 5 % clear) -> lstm/scenes/
+    20_build_gdd_grid.py  S2 cube on a thermal-time axis (17 windows of equal GDD, fixed start per hemisphere x crop)
+                          -> lstm/data_gdd/ (grid "gdd")
+    21_patchiness.py      a run's errors vs the patchiness of the yield map (holes, edge share) -> docs/patchiness_<run>.md
     paper_lstm_results.yaml   the paper's LSTM results (appendix Tab. 13–18)
 src/
   config.py               loads configs/paths.yaml
@@ -74,6 +83,7 @@ src/
   features.py             registry of the loader's features (groups, units, sources, known issues)
   soil.py                 SoilGrids soil in physical units, depth selection
   lai.py                  leaf area index from S2 reflectances (SNAP / S2ToolBox biophysical network)
+  scenes.py               scene-sequence inputs (every usable S2 scene a step; padded batches, augmentation)
   data.py                 opening the NetCDF files, decoded pixel metadata
   metrics.py              field- and pixel-level R² and RMSE
   splits.py               load_split()
@@ -92,6 +102,13 @@ docs/
   inputs_quick_screening.md  val-only screening of the quick input test
   loyo_conv_screening.md  val-only LOYO screening of the ConvLSTM (time axis, LAI, ERA5-Land soil water)
   loyo_diagnosis.md       where the LOYO error comes from (level / scale / ranking), year structure, S2 coverage, sowing dates, seen vs new fields, edge pixels
+  loyo_literature.md      how the literature handles each problem of loyo_diagnosis.md, candidate fixes with references
+  world_vs_regional_screening.md  ConvLSTM LOYO: one World model vs separate Europe / South America models (val, South America)
+  world_inputs_screening.md       World LOYO: + weather, + soil/terrain, edge loss mask vs loyo_ref and the early ConvLSTMs (val)
+  world_variants_screening.md     World LOYO: base ConvLSTM without augmentation + one change per variant (val and test)
+  results_world_variants.md       test tables of the world variants (03_report.py)
+  patchiness_wv_base.md           error vs patchiness of the yield map (holes, edges) for wv_base (scripts/LSTM/21_patchiness.py)
+  loyo_eval.md            val scores vs a peak-NDVI baseline, on new fields only, with paired bootstrap CIs
   features.md             every loader feature: unit, source, known issues, coverage per country
   scene_availability.md   Sentinel-2 scene availability per window (scripts/LSTM/12_scene_availability.py)
   splits.md               dataset statistics and every split
@@ -179,6 +196,9 @@ python scripts/LSTM/02_train.py --config configs/lstm_s2.yaml        # paper LST
 python scripts/LSTM/02_train.py --config configs/lstm_s2_adm.yaml    # paper LSTM, S2 + ADM (~3 h)
 python scripts/LSTM/04_train_v2.py --config configs/lstm_v2_s2.yaml  # LSTM v2              (~4 h)
 python scripts/LSTM/07_train_field_image.py --config configs/field_image_s2.yaml   # field-image model (not run yet)
+python scripts/LSTM/17_baseline_peak_ndvi.py                        # peak-NDVI baseline run, pooled splits (~10 min)
+python scripts/LSTM/04_train_v2.py --config configs/world_variants/base.yaml   # world variants: base (+ edge, 1d,
+                                     # wxdaily, sm, smanom, gdd, scenes), World LOYO, 5 members (~3 h each, scenes ~10 h)
 python scripts/LSTM/03_report.py --out docs/results_<topic>.md       # full tables of the given --configs
 python scripts/LSTM/10_summary.py                                    # -> docs/results_summary.md
 ```
