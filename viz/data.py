@@ -201,6 +201,17 @@ def history(path: str) -> pd.DataFrame:
     return pd.read_csv(Path(path) / "history.csv")
 
 
+@st.cache_data(ttl=120)
+def run_members(path: str) -> pd.DataFrame:
+    """Per member of a run: the epoch early stopping kept (best_epoch), epochs run, the selection criterion
+    (select_on) and its value there (best_score)."""
+    m = json.loads((Path(path) / "metrics.json").read_text())
+    d = pd.DataFrame(m.get("members") or [], columns=["member", "best_epoch", "best_val_field_mse", "select_on",
+                                                       "best_score", "epochs_run"])
+    d["select_on"] = d["select_on"].fillna("field_mse")   # runs before train.select_on existed
+    return d.assign(best_score=d["best_score"].fillna(d["best_val_field_mse"]))
+
+
 @st.cache_data(max_entries=3)
 def preds(path: str, role: str) -> pd.DataFrame:
     pf = pq.ParquetFile(Path(path) / f"preds_{role}.parquet")

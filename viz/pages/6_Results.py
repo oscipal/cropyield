@@ -6,6 +6,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 import data
@@ -298,6 +299,115 @@ with st.container(border=True):
     if info["yaml"]:
         with st.expander("Full config"):
             st.code(info["yaml"], language="yaml")
+
+# ---------------------------------------------------------------- training curves and diagnostics
+with st.expander("Training curves and diagnostics"):
+    tr_runs = data.list_runs().query("config == @cfg & done & has_history")
+    tr_runs = tr_runs[tr_runs["split"].isin(keep)] if len(tr_runs[tr_runs["split"].isin(keep)]) else tr_runs
+    if tr_runs.empty:
+        st.info("No finished run with a training history for this setup.")
+    else:
+        tr_split = (st.selectbox("Split", list(tr_runs["split"]), key=f"res_tr_split_{cfg}") if len(tr_runs) > 1
+                    else tr_runs["split"].iloc[0])
+        tr_path = tr_runs.set_index("split").at[tr_split, "path"]
+        h = data.history(tr_path)
+        if "member" not in h.columns:
+            h["member"] = 0
+        mem = data.run_members(tr_path)
+        all_m = sorted(int(x) for x in h["member"].unique())
+        show_m = st.pills("Models", all_m, selection_mode="multi", default=all_m, key=f"res_tr_models_{cfg}_{tr_split}",
+                          format_func=lambda x: f"model {x + 1}",
+                          help="Each model = one member of the ensemble (own random seed). Click to show / hide.") \
+            or all_m
+        h = h[h["member"].isin(show_m)]
+        sel = mem["select_on"].iloc[0] if len(mem) else "field_mse"
+        CURVES = [("train_loss", "train loss (pixel MSE, standardised yield)"),
+                  ("val_mse", "val pixel MSE (t/ha²)"),
+                  ("val_field_mse", "val field-balanced pixel MSE (t/ha²)"),
+                  ("val_field_z", "val field-mean error² (z, groups equal)")]
+        CURVES = [(c, f"{t} ★criterion" if c == f"val_{sel}" else t) for c, t in CURVES if c in h.columns]
+        figc = make_subplots(rows=1, cols=len(CURVES), subplot_titles=[t for _, t in CURVES])
+        for j, (col, _) in enumerate(CURVES, start=1):
+            for mi, g in h.groupby("member"):
+                c = plots.OKABE_ITO[int(mi) % len(plots.OKABE_ITO)]
+                figc.add_scatter(x=g["epoch"], y=g[col], mode="lines+markers", marker=dict(size=4),
+                                 line=dict(color=c, width=1.5), name=f"model {int(mi) + 1}", legendgroup=str(mi),
+                                 showlegend=j == 1, row=1, col=j,
+                                 hovertemplate=f"model {int(mi) + 1}, epoch %{{x}}: %{{y:.3f}}<extra></extra>")
+                be = mem.loc[mem["member"] == mi, "best_epoch"]
+                if len(be) and int(be.iloc[0]) in set(g["epoch"]):
+                    y = g.loc[g["epoch"] == int(be.iloc[0]), col].iloc[0]
+                    figc.add_scatter(x=[int(be.iloc[0])], y=[y], mode="markers", showlegend=False, row=1, col=j,
+                                     legendgroup=str(mi), marker=dict(symbol="star", size=13, color=c,
+                                                                      line=dict(width=1, color="#333")),
+                                     hovertemplate=f"model {int(mi) + 1}: kept epoch %{{x}}<extra></extra>")
+        figc.update_xaxes(title_text="epoch")
+        figc.update_layout(height=330, margin=dict(l=0, r=0, t=40, b=0), legend=dict(orientation="h", y=-0.25))
+        st.plotly_chart(figc, width="stretch", key=f"res_tr_curves_{cfg}_{tr_split}")
+        st.caption("One line per model (member, own random seed); ★ = the epoch early stopping kept (lowest val "
+                   "criterion; training stops after `patience` epochs without improvement). The train loss is in "
+                   "standardised units (z per country × crop, with augmentation if the setup uses it); the val curves "
+                   "are in t/ha² or z², so train and val are **not** comparable in size. Field-balanced pixel MSE "
+                   "(t/ha²): pixel error averaged per field, includes the within-field scatter and weighs high-yield "
+                   "crops (corn) most. Field-mean error² (z): field-mean prediction minus observed field mean, divided "
+                   "by the country × crop training SD, averaged per group and then over groups with ≥ 5 val fields "
+                   "(≈ 1 − field R² per group); logged for runs from 2026-10-30 on. ★criterion = the curve the run "
+                   "selected on (`train.select_on`).")
+
+        d1, d2 = st.columns([3, 2])
+        mk = [k for k in res["kind"].unique() if k.startswith("m") and k[1:].isdigit()]
+        ms = res[(res["config"] == cfg) & (res["split"] == tr_split) & (res["set"] == role) & (res["group"] != "all")
+                 & (res["n_fields"] >= min_fields) & res["kind"].isin(mk + ["ensemble"])]
+        with d1:
+            if ms.empty:
+                st.info(f"No per-subset {role} scores for this run.")
+            else:
+                ms = ms.assign(subset=ms["country"] + " " + ms["crop"])
+                order_s = (ms[ms["kind"] == "ensemble"].sort_values("field_r2")["subset"].tolist())
+                figm = go.Figure()
+                one = ms[ms["kind"] != "ensemble"]
+                figm.add_scatter(x=one["field_r2"], y=one["subset"], mode="markers", name="single models",
+                                 marker=dict(size=8, color="#999", opacity=0.7),
+                                 customdata=one["kind"].str[1:].astype(int) + 1,
+                                 hovertemplate="model %{customdata}: %{x:.2f}<extra></extra>")
+                en = ms[ms["kind"] == "ensemble"]
+                figm.add_scatter(x=en["field_r2"], y=en["subset"], mode="markers", name="ensemble",
+                                 marker=dict(size=13, symbol="diamond", color="#D55E00", line=dict(width=1, color="#333")),
+                                 hovertemplate="ensemble: %{x:.2f}<extra></extra>")
+                lo = max(float(ms["field_r2"].min()), -2.0)
+                figm.update_layout(height=40 * len(order_s) + 90, margin=dict(l=0, r=0, t=30, b=0),
+                                   title=f"Field R² per subset ({role}): single models vs ensemble",
+                                   xaxis=dict(range=[lo - 0.05, 1], title="field R² (axis cut at −2)"),
+                                   yaxis=dict(categoryorder="array", categoryarray=order_s),
+                                   legend=dict(orientation="h", y=-0.2))
+                st.plotly_chart(figm, width="stretch", key=f"res_tr_members_{cfg}_{tr_split}_{role}")
+                st.caption("Grey = each single model, orange = the ensemble (averaged prediction). A wide grey spread "
+                           "means unstable models; the ensemble is usually at or above their middle.")
+        with d2:
+            fl = data.field_level(tr_path, role)
+            fl = fl.assign(subset=fl["country"].astype(str) + " " + fl["crop"].astype(str))
+            figs = go.Figure()
+            for i, (sname, g) in enumerate(fl.groupby("subset")):
+                figs.add_scatter(x=g["target"], y=g["pred"], mode="markers", name=sname,
+                                 marker=dict(size=6, color=plots.OKABE_ITO[i % len(plots.OKABE_ITO)], opacity=0.75),
+                                 hovertemplate=f"{sname}<br>observed %{{x:.2f}}, predicted %{{y:.2f}} t/ha<extra></extra>")
+            lim = [float(min(fl["target"].min(), fl["pred"].min())), float(max(fl["target"].max(), fl["pred"].max()))]
+            figs.add_scatter(x=lim, y=lim, mode="lines", line=dict(color="#333", dash="dash", width=1),
+                             name="1:1", hoverinfo="skip")
+            figs.update_layout(height=420, margin=dict(l=0, r=0, t=30, b=0),
+                               title=f"Field means ({role}, ensemble)", xaxis_title="observed (t/ha)",
+                               yaxis_title="predicted (t/ha)", legend=dict(font=dict(size=10)))
+            st.plotly_chart(figs, width="stretch", key=f"res_tr_scatter_{cfg}_{tr_split}_{role}")
+            st.caption("One point per field-year; colour = country × crop. Points of one colour shifted off the "
+                       "dashed line together = a year offset for that group.")
+
+        if len(mem):
+            mem = mem[mem["member"].isin(show_m)]
+            mt = mem.assign(model=mem["member"] + 1)[["model", "best_epoch", "epochs_run", "select_on", "best_score"]]
+            st.dataframe(mt.rename(columns={"best_epoch": "kept epoch", "epochs_run": "epochs run",
+                                            "select_on": "criterion", "best_score": "val criterion at kept epoch"})
+                         .style.format({"val criterion at kept epoch": "{:.3f}"}),
+                         hide_index=True, width="content")
 
 # ---------------------------------------------------------------- table
 st.subheader("Scores")
