@@ -34,6 +34,7 @@ from src.config import REPO_ROOT, load_paths, load_yaml  # noqa: E402
 from src.features import INDICES, S2_BANDS  # noqa: E402
 from src.loader import edge_distance, fit_scaler, load  # noqa: E402
 from src.metrics import compute_metrics  # noqa: E402
+from src.scenes import SceneSet, augment_scenes, fit_scene_stats, load_scene_set  # noqa: E402
 from src.splits import load_split  # noqa: E402
 
 ROLE_NAMES = {0: "train", 1: "val", 2: "test"}
@@ -60,7 +61,10 @@ def batch(inputs, b: torch.Tensor, device):
     input xf (B, days, F_daily) is returned."""
     Xd, Xs, nbr, *daily = inputs
     b = b.to(Xd.device)
-    xd = Xd[b] if nbr is None else gather_patches(Xd, nbr[b])
+    if isinstance(Xd, SceneSet):   # scene sequences (inputs.scenes), padded per batch
+        xd = Xd.gather(b, None if nbr is None else nbr[b.to(nbr.device)])
+    else:
+        xd = Xd[b] if nbr is None else gather_patches(Xd, nbr[b])
     out = (xd.to(device, non_blocking=True).float(), Xs[b].to(device, non_blocking=True).float())
     if daily:
         dfi, D = daily
@@ -142,12 +146,16 @@ def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run, spec=Non
             pos = torch.from_numpy(sample_per_field(codes[0], tc.get("pixels_per_field"), rng))
         else:
             pos = torch.from_numpy(loss_pos[sample_per_field(codes[0][loss_pos], tc.get("pixels_per_field"), rng)])
+        if tc.get("bucket_by_length") and isinstance(X[0][0], SceneSet):
+            pos = bucket_by_length(pos, X[0][0].n.cpu(), tc["batch_size"], rng)
         for i in range(0, len(pos), tc["batch_size"]):
             b = pos[i:i + tc["batch_size"]]
             if len(b) < 2:  # BatchNorm needs more than one sample
                 continue
             xd, xs, *xf = batch(X[0], b, device)
-            if aug:
+            if aug and isinstance(X[0][0], SceneSet):
+                xd = augment_scenes(xd, aug, gen, spec.scene_stats)
+            elif aug:
                 xd = augment_batch(xd, aug, gen, spec.obs_index, spec.jitter_cols, n_feat, spec.fill,
                                    getattr(spec, "drop_cols", None))
             yb = y_tr[b].to(device, non_blocking=True)
@@ -178,6 +186,15 @@ def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run, spec=Non
     return model, history, best
 
 
+def bucket_by_length(pos: torch.Tensor, n: torch.Tensor, batch_size: int, rng, chunk: int = 50) -> torch.Tensor:
+    """Reorder the epoch's sample positions so that a batch holds sequences of similar length (less padding):
+    within chunks of `chunk` batches the positions are sorted by length, then the batches are shuffled."""
+    size = chunk * batch_size
+    parts = [pos[i:i + size][torch.argsort(n[pos[i:i + size]], stable=True)] for i in range(0, len(pos), size)]
+    batches = [b for p in parts for b in torch.split(p, batch_size)]
+    return torch.cat([batches[i] for i in rng.permutation(len(batches))])
+
+
 class LoaderSpec:
     """What train_member / save_results need from FeatureSpec, for inputs from src/loader.py."""
 
@@ -192,13 +209,15 @@ class LoaderSpec:
         self.units, self.scaler, self.inputs = d.units, scaler, inputs
 
     daily = None         # set by add_daily: names, mean, std of the daily per-field series
+    scene_stats = None   # set by scene_inputs: names, mean, std of the scene-sequence features
 
     def state(self) -> dict:
         sc = self.scaler
         return {"loader": self.inputs, "dyn_names": self.dyn_names, "static_names": self.static_names,
                 "units": self.units, "dyn_mean": sc.dyn_mean.tolist(), "dyn_std": sc.dyn_std.tolist(),
                 "static_mean": sc.static_mean.tolist(), "static_std": sc.static_std.tolist(),
-                **({"daily": self.daily} if self.daily else {})}
+                **({"daily": self.daily} if self.daily else {}),
+                **({"scenes": self.scene_stats} if self.scene_stats else {})}
 
 
 def add_daily(X: dict, idx: dict, meta: pd.DataFrame, names: list[str], spec) -> dict:
@@ -254,6 +273,22 @@ def loader_inputs(split_name: str, inputs: dict, patch: int | None):
     return LoaderSpec(d0, sc, inputs), X, rows
 
 
+def scene_inputs(split_name: str, inputs: dict, patch: int | None):
+    """inputs.scenes: the dynamic input is the sequence of all usable S2 scenes (src/scenes.py) instead of the
+    loader's windowed features; the loader still provides the static features (inputs.features minus the
+    dynamic ones: crop, country, ...) and the neighbour tables. X[r] = (SceneSet, Xs, nbr)."""
+    static_only = [f for f in inputs["features"] if f.split(":")[0] not in
+                   ("s2", "indices", "observed", "lai", "weather", "era5land")]
+    spec, X, rows = loader_inputs(split_name, {**inputs, "features": static_only, "grid": inputs.get("grid", "30d")},
+                                  patch)
+    if inputs.get("train_filters"):
+        raise ValueError("inputs.train_filters are not supported with inputs.scenes")
+    stats = fit_scene_stats(rows[0])
+    X = {r: (load_scene_set(rows[r], stats), X[r][1], X[r][2]) for r in X}
+    spec.dyn_names, spec.scene_stats = list(stats["names"]), stats
+    return spec, X, rows
+
+
 def prepare_split(split_name, cfg, data) -> dict:
     """Set membership, normalised inputs X[r] = (Xd, Xs), target scaling and field codes of one split
     (r = 0 train, 1 val, 2 test). Shared with 07_train_field_image.py."""
@@ -272,7 +307,10 @@ def prepare_split(split_name, cfg, data) -> dict:
     if "features" in cfg["inputs"]:
         mc = cfg["model"]
         patch = mc["patch_size"] if mc.get("type", "lstm") in ("patch", "convlstm") else None
-        spec, X, idx = loader_inputs(split_name, cfg["inputs"], patch)   # train rows may be filtered
+        if cfg["inputs"].get("scenes"):
+            spec, X, idx = scene_inputs(split_name, cfg["inputs"], patch)
+        else:
+            spec, X, idx = loader_inputs(split_name, cfg["inputs"], patch)   # train rows may be filtered
         if len(idx[0]) != len(np.flatnonzero(role == 0)):
             print(f"  train_filters: {len(idx[0]):,} of {int((role == 0).sum()):,} training pixels kept", flush=True)
     else:  # legacy configs: inputs.dynamic / static / indices / mask_channel / categorical on cfg["data_dir"]
