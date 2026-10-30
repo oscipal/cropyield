@@ -355,7 +355,7 @@ def texture_class(sand, silt, clay) -> np.ndarray:
 
 # menu entry -> configs (first = main config); configs on disk but not listed go to "Other"
 MODEL_FAMILIES = {
-    "Baselines": ["mean", "mean_crop_country"],
+    "Baselines": ["mean", "mean_crop_country", "peak_ndvi"],
     "LSTM v1 (paper)": ["lstm_s2", "lstm_s2_adm"],
     "LSTM v2": ["lstm_v2_s2"],
     "Patch LSTM": ["lstm_patch_v3_s2", "lstm_patch_s2", "lstm_patch_v3_w10_s2", "patch_aug_spec", "patch_aug_time",
@@ -365,15 +365,18 @@ MODEL_FAMILIES = {
     "Field image": ["field_image_s2_screen", "field_image_s2_crop256", "field_image_s2_fmean",
                     "field_image_s2_small", "field_image_s2_tf"],
     "Input tests (loader)": ["quick_all", "quick_s2"],
-    "LOYO screening (ConvLSTM)": ["loyo_ref", "loyo_sow", "loyo_lai", "loyo_lai_only", "loyo_e5_sw",
+    "LOYO screening (ConvLSTM)": ["loyo_ref", "loyo_sow", "loyo_lai", "loyo_lai_only", "loyo_edge20", "loyo_wx", "loyo_soilterr", "loyo_e5_sw",
                                   "loyo_e5_sw_anom", "loyo_e5_anom_wx"],
+    "World variants (ConvLSTM)": ["wv_base", "wv_edge", "wv_1d", "wv_wxdaily", "wv_sm", "wv_smanom", "wv_gdd",
+                                  "wv_scenes", "wv_base_aug"],
 }
 
 
 # what was done per family, in a few sentences (shown above the variant menu)
 FAMILY_NOTES = {
-    "Baselines": "Reference points without a model: every pixel gets a training mean yield. A model has to beat "
-                 "these to be worth anything.",
+    "Baselines": "Reference points without a model: every pixel gets a training mean yield, or its field's "
+                 "prediction from a regression on the field's peak NDVI. A model has to beat these to be worth "
+                 "anything.",
     "LSTM v1 (paper)": "Re-implementation of the YieldSAT paper's pixel LSTM, to check that we reproduce its numbers "
                        "on our splits: Sentinel-2 only, and with the paper's ADM fusion (weather, soil, terrain).",
     "LSTM v2": "The paper LSTM with a set of training and input improvements (vegetation indices, observed-step "
@@ -393,23 +396,42 @@ FAMILY_NOTES = {
     "LOYO screening (ConvLSTM)": "Held-out-year screening (.claude/plans/loyo_conv.md): the 10-day ConvLSTM through "
                                  "the loader, 2 members, europe/loyo/all and south_america/loyo/all, one change per "
                                  "variant (time axis, LAI, ERA5-Land soil water, level vs. pattern), judged on val.",
+    "World variants (ConvLSTM)": "One base model and one change at a time, before hyperparameter tuning "
+                                 "(.claude/plans/world_variants.md): convlstm_base on the new loader (30-day grid), "
+                                 "World LOYO only, 5 members each; variants: edge mask, 1-D model, daily weather, "
+                                 "soil moisture, soil-moisture anomalies, GDD time axis, all scenes without windows.",
     "Field image": "Predicts the whole yield map of a field in one pass (temporal encoder per pixel, then a 2D U-Net "
                    "over the field). Screened on 4 splits; not better than the patch LSTM, so not pursued.",
 }
 
 # one line per variant: what it is or what it changes against its reference
 VARIANT_NOTES = {
+    "wv_base": "Base: convlstm_base on the new loader (S2 + indices + observed + crop / country, 30-day grid), 5 members.",
+    "wv_base_aug": "wv_base with augmentation as convlstm_base (±1-step time shift, 10 % step dropout): what dropping it costs.",
+    "wv_edge": "wv_base with training pixels within 20 m of the outline or of holes ≥ 0.25 ha left out of the loss.",
+    "wv_1d": "wv_base as a pixel LSTM (32 units): the pixel's own series, no neighbourhood.",
+    "wv_wxdaily": "wv_base + daily ERA5-Land temperature and precipitation per field, late GRU branch.",
+    "wv_sm": "wv_base + daily ERA5-Land soil moisture (3 layers + root zone, absolute), late GRU branch.",
+    "wv_smanom": "wv_base + daily ERA5-Land soil-moisture anomalies (layer 1, root zone; vs 1995-2015), late GRU branch.",
+    "wv_gdd": "wv_base on a thermal-time axis: 17 windows of equal GDD from a fixed start per hemisphere × crop.",
+    "wv_scenes": "wv_base without windows: every usable S2 scene is a step, with its date and the gap as inputs.",
     "loyo_ref": "Reference: ConvLSTM (10-day, S2 + indices + observed + crop / country) via the loader, 2 members.",
     "loyo_lai": "loyo_ref + leaf area index per step (SNAP S2 biophysical network, src/lai.py).",
     "loyo_lai_only": "loyo_ref with LAI + NDVI / NDRE / NDMI instead of the 12 reflectance bands.",
     "loyo_e5_sw": "loyo_ref + ERA5-Land soil water (3 layers, 0-100 cm, 2 anomalies), late GRU branch, modality dropout 0.3.",
     "loyo_e5_sw_anom": "loyo_ref + ERA5-Land soil-water anomalies only (vs 1995-2015), late GRU branch.",
     "loyo_e5_anom_wx": "loyo_e5_sw_anom + temperature, precipitation and VPD anomalies, late GRU branch.",
+    "loyo_wx": "loyo_ref + rebuilt weather (rain, GDD per 10-day window); World LOYO only.",
+    "loyo_soilterr": "loyo_ref + soil 0-30 cm and terrain; World LOYO only.",
+    "loyo_edge20": "loyo_ref with training pixels within 20 m of the field edge left out of the loss (still patch inputs).",
     "loyo_sow": "loyo_ref with the time axis aligned on each field-year's sowing date (36 steps after sowing).",
     "quick_s2": "Control: S2 + indices + observed + crop / country, augmentation (±30 d shift, step dropout 0.1).",
     "quick_all": "quick_s2 + weather (prec_mm, gdd per 10-day window), soil 0–30 cm (8 properties), rebuilt terrain.",
     "mean": "Every pixel gets the mean yield of the training pixels.",
     "mean_crop_country": "Every pixel gets the training mean of its crop × country.",
+    "peak_ndvi": "Per country × crop linear regression of field-mean yield on the field's season peak NDVI (100 "
+                 "pixels per field-year, 10-day steps between sowing and harvest), fitted on the train fields; every "
+                 "pixel gets its field's prediction. scripts/LSTM/17_baseline_peak_ndvi.py",
     "lstm_s2": "Paper pixel LSTM: 12 Sentinel-2 bands × 24 monthly steps, 2 LSTM layers, one model.",
     "lstm_s2_adm": "Paper LSTM + weather, soil and terrain repeated at every time step (ADM input fusion).",
     "lstm_v2_s2": "Paper LSTM + indices, observed-step channel, crop / country, target scaling, ensemble of 5.",
@@ -536,7 +558,7 @@ def split_membership() -> pd.DataFrame:
 def architecture(config: str) -> str:
     """Model architecture of a run, from its config (model.type); groups the setups on the Results page."""
     import yaml
-    if config in ("mean", "mean_crop_country"):
+    if config in ("mean", "mean_crop_country", "peak_ndvi"):
         return "Baselines"
     if config.startswith("field_image"):
         return "Field image"
