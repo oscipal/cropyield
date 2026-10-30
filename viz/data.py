@@ -161,6 +161,18 @@ def list_runs() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=120)
+def train_times() -> pd.DataFrame:
+    """Training time per run: sum of history.csv epoch times over all members (data loading not included)."""
+    rows = []
+    for r in list_runs().query("has_history").itertuples():
+        h = pd.read_csv(Path(r.path) / "history.csv")
+        if "epoch_time_s" in h:
+            rows.append({"config": r.config, "split": r.split, "train_s": float(h["epoch_time_s"].sum()),
+                         "epochs": len(h)})
+    return pd.DataFrame(rows, columns=["config", "split", "train_s", "epochs"])
+
+
+@st.cache_data(ttl=120)
 def metrics_long() -> pd.DataFrame:
     """One row per run x set x group ("all" or "Country|crop") with the ensemble metrics."""
     rows = []
@@ -574,13 +586,18 @@ def architecture(config: str) -> str:
 @st.cache_data(ttl=120)
 def results_long() -> pd.DataFrame:
     """One row per run x score kind x set x group ("all" or "Country|crop"). kind "ensemble" = the run's ensemble,
-    "single" = mean of the members' metrics (comparable between 2- and 5-member runs; = ensemble for one member)."""
+    "single" = mean of the members' metrics (comparable between 2- and 5-member runs; = ensemble for one member),
+    "m<i>" = member i alone (its own seed)."""
     rows = []
     for r in list_runs().query("done").itertuples():
         f = Path(r.path) / "metrics.json"
         m = json.loads(f.read_text())
         n_members = len(m.get("members") or []) or 1
-        for kind, src in (("ensemble", m["metrics"]), ("single", m.get("metrics_member_mean") or m["metrics"])):
+        mem = m.get("metrics_members") or {}
+        per_member = [(f"m{i}", {role: ms[i] for role, ms in mem.items() if i < len(ms)})
+                      for i in range(max((len(ms) for ms in mem.values()), default=0))]
+        for kind, src in (("ensemble", m["metrics"]), ("single", m.get("metrics_member_mean") or m["metrics"]),
+                          *per_member):
             for role, groups in src.items():
                 for g, vals in groups.items():
                     country, _, crop = g.partition("|")
@@ -595,10 +612,125 @@ def results_long() -> pd.DataFrame:
         return d
     key = ["config", "split", "set", "group"]          # the member means carry no counts: take the ensemble's
     n = d[d["kind"] == "ensemble"].set_index(key)[["n_fields", "n_pixels"]]
-    single = d["kind"] == "single"
+    single = d["kind"] != "ensemble"
     for c in ("n_fields", "n_pixels"):
         d.loc[single, c] = d.loc[single, key].merge(n[c], left_on=key, right_index=True, how="left")[c].to_numpy()
+    # relative field RMSE: the group mean is a property of the split's labels; a run scored on other fields (count
+    # differs, e.g. runs on an older split version) gets none. "single": member-mean RMSE / mean = mean of rRMSEs
+    gm = group_yield_means()
+    m = d[["split", "set", "group"]].merge(gm, on=["split", "set", "group"], how="left")
+    ok = (m["n_label"].to_numpy() == d["n_fields"].to_numpy())
+    d["field_rrmse"] = np.where(ok, 100 * d["field_rmse"].astype(float) / m["yield_mean"].to_numpy(), np.nan)
     return d
+
+
+@st.cache_data(ttl=120)
+def group_yield_means() -> pd.DataFrame:
+    """Mean observed field yield (fields.parquet yield_mean = the field mean of the pixel targets) of the val / test
+    field-years per split and group ("all" or "Country|crop"), with their count: the denominator of field rRMSE.
+    Shown splits only (list_runs)."""
+    rows = []
+    for split in sorted(set(list_runs()["split"])):
+        try:
+            t, _ = split_table(*split.split("/"))
+        except Exception:                                        # run on a split no longer in the suite
+            continue
+        for role in ("val", "test"):
+            e = t[t["set"] == role]
+            rows.append({"split": split, "set": role, "group": "all", "yield_mean": e["yield_mean"].mean(),
+                         "n_label": len(e)})
+            for (c, k), g in e.groupby(["country", "crop"]):
+                rows.append({"split": split, "set": role, "group": f"{c}|{k}", "yield_mean": g["yield_mean"].mean(),
+                             "n_label": len(g)})
+    return pd.DataFrame(rows, columns=["split", "set", "group", "yield_mean", "n_label"])
+
+
+# field sets of the Results page: val / test field-years by whether their physical field (same land, other years)
+# has a field-year in the split's train set (the definition of scripts/loyo_eval.py)
+FIELD_SETS = {"all": "all", "new": "new only", "seen": "seen only"}
+MIN_FIELDS = 5                                    # groups with fewer fields in a set are dropped
+_SCORES = ("field_r2", "field_rmse", "field_rrmse", "pixel_r2", "pixel_rmse")
+
+
+@st.cache_data
+def field_status(split: str) -> pd.Series:
+    """val / test field-year -> "new" (its physical field has no field-year in the split's train set) or "seen"."""
+    t, _ = split_table(*split.split("/"))
+    train = set(t.loc[t["set"] == "train", "physical_field"])
+    ev = t[t["set"] != "train"]
+    return pd.Series(np.where(ev["physical_field"].isin(train), "seen", "new"), index=ev["field"].to_numpy())
+
+
+@st.cache_data(max_entries=2000)
+def _field_sums(path: str, role: str, mtime: float) -> pd.DataFrame:
+    """Per field-year sums of a run's preds_<role>.parquet: pixels, target sum and sum of squares, and per prediction
+    column ("pred" = ensemble, "pred_m<i>" = members) the prediction sum and squared-error sum, from which the field
+    and pixel metrics of any set of field-years follow. mtime only keys the cache (a rewritten file is read again)."""
+    f = Path(path) / f"preds_{role}.parquet"
+    names = pq.ParquetFile(f).schema_arrow.names
+    key = "field_year" if "field_year" in names else "field"          # the field-year id (src.metrics.field_level)
+    pcols = ["pred"] + sorted((c for c in names if c.startswith("pred_m")), key=lambda c: int(c[6:]))
+    d = pq.read_table(f, columns=[key, "country", "crop", "target"] + pcols,
+                      read_dictionary=[key, "country", "crop"]).to_pandas()
+    code = d[key].cat.codes.to_numpy()
+    u, first = np.unique(code, return_index=True)
+    bc = lambda w=None: np.bincount(code, weights=w, minlength=len(d[key].cat.categories))[u]
+    t = d["target"].to_numpy(np.float64)
+    out = {"field": d[key].cat.categories.to_numpy()[u].astype(str),
+           "country": d["country"].to_numpy()[first].astype(str), "crop": d["crop"].to_numpy()[first].astype(str),
+           "n": bc(), "t_sum": bc(t), "t_sq": bc(t * t)}
+    for c in pcols:
+        p = d[c].to_numpy(np.float64)
+        out[f"{c}:sum"], out[f"{c}:sse"] = bc(p), bc((t - p) ** 2)
+    return pd.DataFrame(out)
+
+
+def _scores(g: pd.DataFrame, col: str) -> dict:
+    """src.metrics.compute_metrics of prediction column `col` on the field-years of g, from their sums, plus field
+    rRMSE (% of the mean observed field yield of g)."""
+    from src.metrics import r2, rmse
+    n = g["n"].sum()
+    ss_tot = g["t_sq"].sum() - g["t_sum"].sum() ** 2 / n
+    sse = g[f"{col}:sse"].sum()
+    fm = g["t_sum"] / g["n"]
+    f_rmse = rmse(fm, g[f"{col}:sum"] / g["n"])
+    return {"field_r2": r2(fm, g[f"{col}:sum"] / g["n"]), "field_rmse": f_rmse,
+            "field_rrmse": 100 * f_rmse / fm.mean() if fm.mean() else np.nan,
+            "pixel_r2": float(1 - sse / ss_tot) if ss_tot > 0 else np.nan, "pixel_rmse": float(np.sqrt(sse / n)),
+            "n_fields": len(g), "n_pixels": int(n)}
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def results_fieldset(field_set: str, role: str, configs: tuple[str, ...], splits: tuple[str, ...]) -> pd.DataFrame:
+    """results_long() rows of one role, recomputed from the runs' preds_<role>.parquet on a field set: "all", "new" or
+    "seen" field-years (field_status). Same scores as metrics.json: "ensemble" from `pred`, "single" = mean over the
+    members' `pred_m<i>` scores (= ensemble without member columns). Groups with < MIN_FIELDS fields in the set are
+    dropped; runs without the preds file (the mean baselines have no preds_val) are left out."""
+    runs = list_runs().query("done")
+    runs = runs[runs["config"].isin(configs) & runs["split"].isin(splits)]
+    rows = []
+    for r in runs.itertuples():
+        f = Path(r.path) / f"preds_{role}.parquet"
+        if not f.exists():
+            continue
+        s = _field_sums(r.path, role, f.stat().st_mtime)
+        if field_set != "all":
+            s = s[s["field"].map(field_status(r.split)).eq(field_set).to_numpy()]
+        members = [c[:-4] for c in s.columns if c.startswith("pred_m") and c.endswith(":sum")]
+        groups = [("all", s)] + [(f"{c}|{k}", g) for (c, k), g in s.groupby(["country", "crop"])]
+        for g_name, g in groups:
+            if len(g) < MIN_FIELDS:
+                continue
+            ens = _scores(g, "pred")
+            ms = [_scores(g, m) for m in members]
+            single = {**ens, **{k: float(np.mean([m[k] for m in ms])) for k in _SCORES}} if ms else ens
+            country, _, crop = g_name.partition("|")
+            for kind, vals in (("ensemble", ens), ("single", single), *zip([c[5:] for c in members], ms)):
+                rows.append({"config": r.config, "split": r.split, "scope": r.scope, "method": r.method,
+                             "split_crop": r.crop, "kind": kind, "set": role, "group": g_name,
+                             "country": country if crop else None, "crop": crop or None,
+                             "n_members": len(members) or 1, "finished": f.stat().st_mtime, **vals})
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(ttl=120)
@@ -622,6 +754,139 @@ def setups() -> pd.DataFrame:
     s["experiment"] = [family_of(c) for c in s["config"]]
     s["desc"] = [config_info(c)["desc"] or config_info(c)["header"] for c in s["config"]]
     return s.sort_values("first").reset_index(drop=True)
+
+
+CUBES = {"data_w10": "10-day cube (51 steps)", "data_w15": "15-day cube (34 steps)",
+         "data_w30": "30-day cube rebuilt from day 210 (17 steps)"}
+CUBE_DAYS = {"data_w10": 10, "data_w15": 15, "data_w30": 30}
+INPUT_NAMES = {"s2": "Sentinel-2 bands (12)", "indices": "NDVI, NDRE, NDMI", "observed": "observed-step flag",
+               "lai": "LAI (SNAP)", "crop": "crop", "country": "country", "terrain": "terrain",
+               "era5land": "ERA5-Land soil water", "weather": "weather", "soil": "soil", "coords": "coordinates"}
+
+
+def _input_name(spec: str) -> str:
+    g, _, arg = spec.partition(":")
+    return INPUT_NAMES.get(g, g) + (f" ({arg.replace(',', ', ')})" if arg else "")
+
+
+@st.cache_data(ttl=120)
+def config_bullets(config: str) -> list[str]:
+    """The run's setup as short plain-language bullet points; special settings (edge masking, late fusion, sowing
+    axis, ...) only when used."""
+    import yaml
+    path = config_paths().get(config)
+    if not path:
+        return []
+    c = yaml.safe_load(path.read_text()) or {}
+    inp, mc, tc = c.get("inputs") or {}, c.get("model") or {}, c.get("train") or {}
+    out = []
+    if "unet_channels" in mc:                                   # field-image model (07_train_field_image.py)
+        enc = mc.get("encoder") or {}
+        out.append(f"**Model:** field image: per-pixel {enc.get('type', 'lstm')} encoder ({enc.get('hidden_size')} "
+                   f"hidden, {enc.get('num_layers', 1)} layers) + U-Net over the whole field "
+                   f"({' / '.join(str(x) for x in mc['unet_channels'])} channels), dropout {mc.get('dropout')}")
+        mc = {}
+    kind = {"convlstm": "ConvLSTM", "patch": "Patch LSTM", "lstm": "pixel LSTM"}.get(mc.get("type", "lstm"),
+                                                                                       mc.get("type"))
+    size = mc.get("hidden_channels") or mc.get("hidden_size")
+    if mc or not out:
+        out.append(f"**Model:** {kind}" + (f", {mc['patch_size']} × {mc['patch_size']} pixel neighbourhood"
+                                           if mc.get("patch_size") else "")
+                   + (f", {size} hidden {'channels' if mc.get('hidden_channels') else 'units'}" if size else "")
+                   + (f", {mc.get('num_layers', 1)} layer{'s' if mc.get('num_layers', 1) > 1 else ''}")
+                   + (f", dropout {mc['dropout']}" if mc.get("dropout") else ""))
+    if "features" in inp:                                       # loader configs
+        names = [_input_name(f) for f in inp["features"]]
+        grid = str(inp.get("grid", "10d"))
+        step = int(grid.rstrip("d")) if grid.rstrip("d").isdigit() else 1
+        if inp.get("scenes"):
+            names += ["scene date and days since the previous scene"]
+            axis = ("no windows: every usable Sentinel-2 scene (≥ 5 % clear pixels on the field, days 210–720) is "
+                    "one step")
+        elif grid == "gdd":
+            axis = ("thermal time: 17 windows of equal growing degree days from a fixed start date per hemisphere × "
+                    "crop, best scene per window")
+        else:
+            axis = (f"{step}-day steps, aligned on the sowing date" if inp.get("align") == "sowing"
+                    else f"{step}-day steps on the calendar (from day 210)")
+    else:                                                       # old input path
+        names = [_input_name(f) for f in (inp.get("dynamic") or [])] + [_input_name(f) for f in inp.get("static") or []]
+        names += [", ".join(i.upper() for i in inp.get("indices") or [])] if inp.get("indices") else []
+        names += ["observed-step flag"] if inp.get("mask_channel") else []
+        names += list(inp.get("categorical") or [])
+        step = CUBE_DAYS.get(c.get("data_dir"), 30)
+        axis = CUBES.get(c.get("data_dir"), "original 30-day cube (24 steps)")
+    out.append("**Inputs:** " + ", ".join(n for n in names if n))
+    out.append(f"**Time axis:** {axis}")
+    if mc.get("late_features"):
+        out.append(f"**Late fusion:** {', '.join(mc['late_features'])} through a separate small GRU into the head")
+    if mc.get("daily_features"):
+        out.append(f"**Daily branch:** {', '.join(mc['daily_features'])} per field and day (ERA5-Land, days "
+                   f"210–719) through a separate small GRU ({mc.get('late_hidden', 16)} units) into the head"
+                   + (f"; switched off for {mc['late_dropout']:.0%} of the training samples" if mc.get("late_dropout")
+                      else ""))
+    filt = inp.get("train_filters") or {}
+    if filt.get("edge_buffer_m"):
+        out.append(f"**Edge filter:** training pixels within {filt['edge_buffer_m']} m of the field edge removed")
+    if tc.get("loss_edge_buffer_m"):
+        holes = (f" (field outline and holes of ≥ {tc['loss_edge_min_hole_px']} pixels; smaller holes count as field)"
+                 if tc.get("loss_edge_min_hole_px") else " (every hole in the yield map counts as edge)")
+        out.append(f"**Edge masking:** training pixels within {tc['loss_edge_buffer_m']} m of the field edge left out "
+                   f"of the loss (still used as neighbourhood inputs){holes}")
+    for k in ("min_observed", "countries", "crops", "years"):
+        if filt.get(k):
+            out.append(f"**Training filter:** {k} = {filt[k]}")
+    if (c.get("target") or {}).get("standardize_by"):
+        out.append(f"**Target:** yield standardised per {' × '.join(c['target']['standardize_by'])}")
+    aug = tc.get("augment") or {}
+    aug_on = aug is True                                     # field-image configs: augment: true (flips, crops)
+    aug = aug if isinstance(aug, dict) else {}
+    tr = [f"{tc.get('pixels_per_field') or 'all'} pixels per field and round",
+          f"up to {tc.get('max_epochs')} rounds, stop after {tc.get('patience')} without improvement"]
+    if aug.get("time_shift"):
+        tr.append(f"random time shift ±{aug['time_shift']} GDD window" if str(inp.get("grid")) == "gdd"
+                  else f"random time shift ±{aug['time_shift'] * step} days")
+    if aug.get("day_shift"):
+        tr.append(f"random shift of the scene dates by ±{aug['day_shift']} days")
+    if aug.get("step_dropout"):
+        tr.append(f"{aug['step_dropout']:.0%} of time steps dropped at random")
+    if aug_on:
+        tr.append("augmentation on")
+    out.append("**Training:** " + "; ".join(tr))
+    n = (c.get("ensemble") or {}).get("n_members", 1)
+    seed = c.get("seed")
+    out.append(f"**Models:** {n} ({'final run' if n >= 5 else 'screening'})"
+               + (f", seeds {', '.join(str(seed + 1000 * i) for i in range(n))}" if seed is not None else ""))
+    facts = run_facts(config)
+    for f in facts.itertuples():
+        scope, method, _ = f.split.split("/")
+        out.append(f"**Trained on {SCOPE_LABELS.get(scope, scope)} {method.upper()}:** {f._2} fields (train / val / "
+                   f"test); rounds per model {f._4}; {f._5} training")
+    return out
+
+
+@st.cache_data(ttl=120)
+def run_facts(config: str) -> pd.DataFrame:
+    """What was done per finished split: field and pixel counts, epochs per member, training time, inputs used."""
+    rows = []
+    times = train_times().set_index(["config", "split"])["train_s"]
+    for r in list_runs().query("done & config == @config").itertuples():
+        m = json.loads((Path(r.path) / "metrics.json").read_text())
+        mem = m.get("members") or []
+        f = m.get("features") if isinstance(m.get("features"), dict) else {}
+        s = times.get((config, r.split))
+        rows.append({"split": r.split,
+                     "fields train / val / test": " / ".join(str(m.get("n_fields", {}).get(k, "–"))
+                                                           for k in ("train", "val", "test")),
+                     "train pixels": m.get("n_pixels", {}).get("train"),
+                     "epochs run (best) per model": ", ".join(f"{x['epochs_run']} (best {x['best_epoch'] + 1})"
+                                                              for x in mem)
+                                                     or "–",
+                     "training time": "–" if s is None or pd.isna(s) else f"{s / 3600:.1f} h" if s >= 3600
+                     else f"{s / 60:.0f} min",
+                     "inputs used": f"{len(f.get('dyn_names') or [])} time series, "
+                                    f"{len(f.get('static_names') or [])} static" if f else "–"})
+    return pd.DataFrame(rows)
 
 
 def flat_config(config: str) -> dict[str, str]:
