@@ -18,6 +18,8 @@ Time axis (dynamic features):
     grid     "30d", "15d", "10d": windows of the S2 cubes rebuilt from the raw scenes (scripts/LSTM/11_build_s2_grid.py,
              start day 210, best scene per window, clear pixels only) with the weather on the same windows
              (scripts/LSTM/13_build_weather_grid.py).
+             "gdd": 17 windows of equal growing degree days from a fixed start per hemisphere x crop, best scene
+             per window (scripts/LSTM/20_build_gdd_grid.py); S2-derived features only, d.days = window index.
     align    "calendar": day 0 = 1 January of the year before the harvest year (src/season.py), the grid as built.
              "sowing" / "harvest": every field-year shifted so that step 0 is the window that contains its sowing /
              harvest date. Shifts are whole windows, so the alignment is exact to one window (10 / 15 / 30 days).
@@ -60,7 +62,7 @@ from src.config import country_dirs, load_paths
 from src.season import read_season
 from src.splits import load_split
 
-GRIDS = {"30d": "data_w30", "15d": "data_w15", "10d": "data_w10"}
+GRIDS = {"30d": "data_w30", "15d": "data_w15", "10d": "data_w10", "gdd": "data_gdd"}
 ROLES = ("train", "val", "test")
 ALIGN = ("calendar", "sowing", "harvest")
 DEFAULT_SEASON = {"sowing": (0, 360), "harvest": (-360, 0)}   # calendar: the whole grid
