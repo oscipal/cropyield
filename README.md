@@ -8,13 +8,14 @@ topography.
 The repository contains
 
 1. a **split suite**: 24 train/val/test splits that hold out whole years (`loyo`) or whole regions (`loro`), for
-   Germany, South America and the world, per crop and for all crops pooled (`docs/splits.md`);
+   Germany, South America and the world, per crop and for all crops pooled (`docs/splits.md`), plus 6
+   cross-validation folds over years for the World model (`world/cv<year>/all`, test years 2018–2023);
 2. the **paper's LSTM**, replicated and trained once per split, with Sentinel-2 only and with the additional
    modalities (S2 + ADM);
 3. **LSTM v2**, the paper LSTM with extra inputs, per-crop target scaling, field-balanced training,
    regularisation and a 5-member Deep Ensemble.
 
-Results: `docs/results_summary.md` (all models, short), full tables in `docs/results_convlstm.md` (current split suite), `docs/results_inputs_quick.md` (quick input test with the new loader) and `docs/results_lstm.md` (old suite, before Switzerland); World variants (base + one change each, val and test) in `docs/world_variants_screening.md` and their test tables in `docs/results_world_variants.md`; also on the visualizer's homepage.
+Results: `docs/results_summary.md` (all models, short), full tables in `docs/results_convlstm.md` (current split suite), `docs/results_inputs_quick.md` (quick input test with the new loader) and `docs/results_lstm.md` (old suite, before Switzerland); World variants (base + one change each, val and test) in `docs/world_variants_screening.md` and their test tables in `docs/results_world_variants.md`; cross-validation over years in `docs/results_cv_<topic>.md` (`scripts/LSTM/22_cv_report.py`, none yet); also on the visualizer's homepage and its Cross-validation page.
 
 ## Setup
 
@@ -41,11 +42,14 @@ configs/
   inputs_quick/           small pixel LSTM via src/loader.py: quick_s2 (S2 only), quick_all (+ weather, soil, terrain)
   loyo_conv/              LOYO screening of the ConvLSTM (time axis, LAI, ERA5-Land soil water; .claude/plans/loyo_conv.md)
   world_variants/         base model (convlstm_base, World LOYO) + one change each: edge, 1d, wxdaily, sm, smanom,
-                          gdd, scenes (.claude/plans/world_variants.md)
+                          gdd, scenes; base_aug, 1d_aug (+ _s2, _scenes); base_aug_fz (+ _s2): early stopping on
+                          the field-level criterion (.claude/plans/world_variants.md)
+  cv/                     cross-validation over years (6 folds world/cv<year>/all): 1d_aug (+ _fz, _fz_s2)
+                          (.claude/plans/cross_validation.md)
   field_image_s2.yaml     field-image model (temporal encoder + U-Net over the whole field)
 scripts/
   05_build_field_table.py one row per field-year (physical fields, regions)
-  06_make_split_suite.py  builds the 24 splits
+  06_make_split_suite.py  builds the 24 splits and the CV folds world/cv<year>/all (--methods cv)
   07_split_report.py      writes docs/splits.md
   check_loader.py         src/loader.py against the old input pipeline and the source files
   check_lai.py            src/lai.py against the reference SNAP LAI script, plausibility, angle sensitivity
@@ -76,6 +80,7 @@ scripts/
     20_build_gdd_grid.py  S2 cube on a thermal-time axis (17 windows of equal GDD, fixed start per hemisphere x crop)
                           -> lstm/data_gdd/ (grid "gdd")
     21_patchiness.py      a run's errors vs the patchiness of the yield map (holes, edge share) -> docs/patchiness_<run>.md
+    22_cv_report.py       cross-validation over years: pooled scores of configs trained on the CV folds -> docs/results_cv_<topic>.md
     paper_lstm_results.yaml   the paper's LSTM results (appendix Tab. 13–18)
 src/
   config.py               loads configs/paths.yaml
@@ -88,7 +93,8 @@ src/
   metrics.py              field- and pixel-level R² and RMSE
   splits.py               load_split()
   season.py               sowing / harvest dates of a field-year on the cube's day axis
-  splitting.py            split construction and scoring (used by 06/07)
+  splitting.py            split construction and scoring (used by 06/07); CV_YEARS, cv_folds
+  cv.py                   cross-validation over years: pools a config's fold predictions, scores per group and year
 viz/                      browser visualizer (Streamlit): fields + inputs, runs, predictions, splits, results explorer,
                           configure run
                           (writes configs/custom/<name>.yaml for 04_train_v2.py; never starts training)
@@ -126,6 +132,14 @@ ssh -L 8501:localhost:8501 pf-pc37.ethz.ch       # on your laptop, then open htt
 ```
 It reads only derived files in `work_dir` (memmaps sliced per field) and binds to localhost only: the data holds
 exact field locations, do not expose or host it.
+The Results page scores setups on the ensemble by default and has a **Training curves and diagnostics** dropdown per
+setup:
+- loss curves per model, with the epoch that early stopping kept;
+- single models vs ensemble per country × crop;
+- predicted vs observed field means.
+
+The **Cross-validation** page pools the CV folds of each setup (test or val): per-setup overview with paired
+differences, scores per country × crop and year, and per country × crop over all CV years.
 
 ## Pipeline
 
@@ -135,7 +149,7 @@ Run from the repository root with the venv active.
 
 ```bash
 python scripts/05_build_field_table.py     # -> work_dir/fields.parquet
-python scripts/06_make_split_suite.py      # -> split_suite (zarr)
+python scripts/06_make_split_suite.py      # -> split_suite (zarr); --scopes world --methods cv: only the CV folds
 python scripts/07_split_report.py          # -> docs/splits.md
 ```
 
@@ -200,6 +214,7 @@ python scripts/LSTM/17_baseline_peak_ndvi.py                        # peak-NDVI 
 python scripts/LSTM/04_train_v2.py --config configs/world_variants/base.yaml   # world variants: base (+ edge, 1d,
                                      # wxdaily, sm, smanom, gdd, scenes), World LOYO, 5 members (~3 h each, scenes ~10 h)
 python scripts/LSTM/03_report.py --out docs/results_<topic>.md       # full tables of the given --configs
+python scripts/LSTM/22_cv_report.py --configs <a> <b> --out docs/results_cv_<topic>.md   # CV over years (pooled folds)
 python scripts/LSTM/10_summary.py                                    # -> docs/results_summary.md
 ```
 
@@ -252,3 +267,11 @@ from single held-out sets, so the comparison in `docs/results_lstm.md` is approx
 paper LSTM is below the paper (median field R² 0.04 vs. 0.39 over the same subsets), the additional modalities do
 not help it on average, and LSTM v2 is the best variant (median 0.20, better than the baseline in 43 of 52 subsets,
 lower RMSE than the paper on average).
+
+**Cross-validation over years** (World model, from 2026-10-30): one fold per test year 2018–2023, the years with
+enough data (> 200 field-years and ≥ 6 country × crop groups with ≥ 10 fields, Switzerland not counted). Each fold's
+val year is the next of these years (cyclic), so every CV year is test once and val once; 2016, 2017 and 2024 (and
+later years) are always train. Fold 2021 is the same split as `world/loyo/all`, so an existing World LOYO run counts
+as that fold. A config trains the folds with `splits: [world/cv2018/all, ...]`; `splits: all` never includes them.
+Scores (`src/cv.py`) use the ensemble field means and only country × crop × year cells with ≥ 10 fields: per
+country × crop with all CV years pooled (rewards getting each year's level right) and per country × crop × year.
