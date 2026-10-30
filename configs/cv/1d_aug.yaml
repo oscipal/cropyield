@@ -1,0 +1,41 @@
+# CV baseline of the 1-D model, early stopping on the old criterion (field-balanced pixel MSE, t/ha). (user, 2026-10-30)
+# Cross-validation over years (.claude/plans/cross_validation.md): the 6 folds world/cv<year>/all, test years
+# 2018-2023, each fold's val year = the next CV year. Model as configs/world_variants/1d_aug.yaml (pixel LSTM +
+# augmentation), 5 members per fold.
+name: cv_1d_aug
+seed: 42
+
+inputs:
+  features: [s2, indices, observed, crop, country]
+  grid: 30d
+
+target:
+  standardize_by: [crop, country]    # z-score yield per group (train stats)
+
+splits: [world/cv2018/all, world/cv2019/all, world/cv2020/all, world/cv2021/all, world/cv2022/all, world/cv2023/all]
+
+model:
+  type: lstm              # pixel only: LSTM over the pixel's own series, no neighbourhood
+  hidden_size: 32         # = hidden_channels of the base ConvLSTM
+  num_layers: 1
+  head_size: 128
+  dropout: 0.2
+
+train:
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  batch_size: 1024
+  pixels_per_field: 500
+  max_epochs: 100
+  patience: 10             # on field-balanced val MSE (t/ha)
+  eval_batch_size: 4096
+  gpu_data_max_gb: 2.0
+  augment: {time_shift: 1, step_dropout: 0.1}   # as convlstm_base / wv_base_aug: ±1 step shift, 10 % step dropout
+
+ensemble:
+  n_members: 5
+
+wandb:
+  project: yieldsat
+  entity: null
+  mode: disabled
