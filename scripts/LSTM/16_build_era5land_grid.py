@@ -3,6 +3,8 @@
 
     python scripts/LSTM/16_build_era5land_grid.py                 # every grid folder: data_w10, data_w15, data_w30
     python scripts/LSTM/16_build_era5land_grid.py --grids data_w10
+    python scripts/LSTM/16_build_era5land_grid.py --grids daily      # one value per day (days 210-719), for the
+                                                                      # daily late-fusion branch (model.daily_features)
 
 Input: <work_dir>/era5land/daily/<cell>.parquet and cells.parquet (scripts/LSTM/15_download_era5land.py). Windows
 as in 13_build_weather_grid.py: window k = days [start + k d, start + (k + 1) d) on the cube's day axis
@@ -64,7 +66,13 @@ def cell_daily(path: Path) -> pd.DataFrame:
     return d
 
 
+DAILY = {"start_day": 210, "window_days": 1, "n_times": 510}   # the S2 grids' day range [210, 720), day by day
+
+
 def windows(d: pd.DataFrame, jan1, start: int, days: int, n_times: int) -> np.ndarray:
+    if days == 1:                                       # daily: a plain reindex (sums and means are the day itself)
+        a = pd.Timestamp(jan1 + timedelta(days=start + 1))
+        return d[list(FEATURES)].reindex(pd.date_range(a, periods=n_times)).to_numpy(np.float32)
     out = np.full((n_times, len(FEATURES)), np.nan, dtype=np.float32)
     cols = list(FEATURES)
     vals = d[cols]
@@ -88,6 +96,9 @@ def main() -> None:
     cells = pd.read_parquet(work / "era5land" / "cells.parquet").set_index("field")["cell"]
     grids = []
     for g in args.grids:
+        if g == "daily":
+            (lstm / g).mkdir(exist_ok=True)
+            (lstm / g / "info.json").write_text(json.dumps({**DAILY, "source": "scripts/LSTM/16_build_era5land_grid.py"}))
         info = json.loads((lstm / g / "info.json").read_text())
         grids.append((info.get("start_day", 0), info.get("window_days", 30), info["n_times"]))
     arrs = [np.full((len(order), n, len(FEATURES)), np.nan, np.float32) for _, _, n in grids]

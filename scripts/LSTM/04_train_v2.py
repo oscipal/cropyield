@@ -54,12 +54,18 @@ def set_seed(seed: int) -> None:
 
 
 def batch(inputs, b: torch.Tensor, device):
-    """Model inputs for the rows b of one set. inputs = (Xd, Xs, nbr); nbr is None for pixel models, else the
-    set's local neighbour table, and the dynamic input becomes the patch (B, k*k, T, F + 1)."""
-    Xd, Xs, nbr = inputs
+    """Model inputs for the rows b of one set. inputs = (Xd, Xs, nbr[, dfi, D]); nbr is None for pixel models, else
+    the set's local neighbour table, and the dynamic input becomes the patch (B, k*k, T, F + 1). With the daily
+    per-field series (model.daily_features), dfi = row -> field-year row of D (n_fy, days, F_daily), and a third
+    input xf (B, days, F_daily) is returned."""
+    Xd, Xs, nbr, *daily = inputs
     b = b.to(Xd.device)
     xd = Xd[b] if nbr is None else gather_patches(Xd, nbr[b])
-    return xd.to(device, non_blocking=True).float(), Xs[b].to(device, non_blocking=True).float()
+    out = (xd.to(device, non_blocking=True).float(), Xs[b].to(device, non_blocking=True).float())
+    if daily:
+        dfi, D = daily
+        out += (D[dfi[b.to(dfi.device)].to(D.device)].to(device, non_blocking=True).float(),)
+    return out
 
 
 @torch.no_grad()
@@ -76,8 +82,9 @@ def predict(model, inputs, batch_size, device) -> np.ndarray:
 def build_model(cfg: dict, n_dyn: int, n_static: int, dyn_names: list[str] | None = None) -> torch.nn.Module:
     mc = cfg["model"]
     late = mc.get("late_features") or []          # convlstm only: dynamic inputs fused late (per-field series)
-    if late and mc.get("type") != "convlstm":
-        raise ValueError("model.late_features needs model.type: convlstm")
+    daily = mc.get("daily_features") or []        # convlstm only: daily per-field series, own GRU branch, fused late
+    if (late or daily) and mc.get("type") != "convlstm":
+        raise ValueError("model.late_features / daily_features need model.type: convlstm")
     if mc.get("type", "lstm") == "patch":
         return PatchLSTM(n_dyn, n_static, mc["patch_size"], mc["conv_channels"], mc["hidden_size"],
                          mc["num_layers"], mc["head_size"], mc.get("dropout", 0.0))
@@ -88,7 +95,7 @@ def build_model(cfg: dict, n_dyn: int, n_static: int, dyn_names: list[str] | Non
         return ConvLSTMModel(n_dyn, n_static, mc["patch_size"], mc["hidden_channels"], mc["num_layers"],
                              mc["kernel_size"], mc["head_size"], mc.get("dropout", 0.0),
                              [dyn_names.index(n) for n in late], mc.get("late_hidden", 16),
-                             mc.get("late_dropout", 0.0))
+                             mc.get("late_dropout", 0.0), len(daily))
     return LSTMv2(n_dyn + n_static, mc["hidden_size"], mc["num_layers"], mc["head_size"], mc.get("dropout", 0.0))
 
 
@@ -139,13 +146,13 @@ def train_member(member, X, y_z, y_true, codes, scal, cfg, device, run, spec=Non
             b = pos[i:i + tc["batch_size"]]
             if len(b) < 2:  # BatchNorm needs more than one sample
                 continue
-            xd, xs = batch(X[0], b, device)
+            xd, xs, *xf = batch(X[0], b, device)
             if aug:
                 xd = augment_batch(xd, aug, gen, spec.obs_index, spec.jitter_cols, n_feat, spec.fill,
                                    getattr(spec, "drop_cols", None))
             yb = y_tr[b].to(device, non_blocking=True)
             opt.zero_grad(set_to_none=True)
-            loss = loss_fn(model(xd, xs), yb)
+            loss = loss_fn(model(xd, xs, *xf), yb)
             loss.backward()
             opt.step()
             total += loss.item() * len(b)
@@ -184,11 +191,39 @@ class LoaderSpec:
         self.fill = 0.0
         self.units, self.scaler, self.inputs = d.units, scaler, inputs
 
+    daily = None         # set by add_daily: names, mean, std of the daily per-field series
+
     def state(self) -> dict:
         sc = self.scaler
         return {"loader": self.inputs, "dyn_names": self.dyn_names, "static_names": self.static_names,
                 "units": self.units, "dyn_mean": sc.dyn_mean.tolist(), "dyn_std": sc.dyn_std.tolist(),
-                "static_mean": sc.static_mean.tolist(), "static_std": sc.static_std.tolist()}
+                "static_mean": sc.static_mean.tolist(), "static_std": sc.static_std.tolist(),
+                **({"daily": self.daily} if self.daily else {})}
+
+
+def add_daily(X: dict, idx: dict, meta: pd.DataFrame, names: list[str], spec) -> dict:
+    """Append (dfi, D) to every X[r]: D (n_fy, days, F) float32 = the daily per-field ERA5-Land series of
+    <work>/lstm/daily/era5land.npy (scripts/LSTM/16_build_era5land_grid.py --grids daily; days 210-719), z-scored
+    with the mean / std over the training field-years, NaN -> 0; dfi (n,) = row of D of each pixel."""
+    d = load_paths()["work_dir"] / "lstm" / "daily"
+    dj = json.loads((d / "era5land.json").read_text())
+    missing = [n for n in names if n not in dj["features"]]
+    if missing:
+        raise KeyError(f"model.daily_features {missing} not in {dj['features']}")
+    D = np.load(d / "era5land.npy")[..., [dj["features"].index(n) for n in names]]
+    pos = pd.Series(np.arange(len(dj["fields"])), index=dj["fields"])
+    field = meta["field"].astype(str).to_numpy()
+    dfi = {r: pos.reindex(field[idx[r]]).to_numpy() for r in X}
+    if any(pd.isna(v).any() for v in dfi.values()):
+        raise ValueError("pixels whose field-year has no daily series")
+    tr = np.unique(dfi[0]).astype(np.int64)
+    mean, std = np.nanmean(D[tr], axis=(0, 1)), np.nanstd(D[tr], axis=(0, 1))
+    std[~(std > 1e-12)] = 1.0
+    D = torch.from_numpy(np.nan_to_num((D - mean) / std, nan=0.0).astype(np.float32))
+    spec.daily = {"names": list(names), "mean": mean.tolist(), "std": std.tolist(), "days": [dj["start_day"],
+                  dj["start_day"] + dj["n_times"]]}
+    print(f"  daily features {names}: {D.shape[1]} days, {len(tr)} training field-years", flush=True)
+    return {r: (*X[r], torch.from_numpy(dfi[r].astype(np.int64)), D) for r in X}
 
 
 TIME_OPTIONS = ("align", "season")                                 # applied to train, val and test
@@ -248,6 +283,10 @@ def prepare_split(split_name, cfg, data) -> dict:
     y_true = {r: meta["target"].to_numpy(np.float32)[idx[r]] for r in (0, 1, 2)}
     y_z = ((y_true[0] - scal[0][0]) / scal[0][1]).astype(np.float32)
     codes = {r: pd.factorize(meta["field"].iloc[idx[r]])[0] for r in (0, 1, 2)}
+    if cfg["model"].get("daily_features"):
+        if "features" not in cfg["inputs"]:
+            raise ValueError("model.daily_features needs loader inputs (inputs.features)")
+        X = add_daily(X, idx, meta, cfg["model"]["daily_features"], spec)
     loss_pos = None
     buf = cfg["train"].get("loss_edge_buffer_m")
     if buf:  # edge pixels stay as inputs (ConvLSTM patches) but leave the loss; val / test are untouched
